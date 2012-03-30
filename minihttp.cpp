@@ -238,7 +238,11 @@ bool TcpSocket::open(const char *host /* = NULL */, unsigned int port /* = 0 */)
 {
     if(isOpen())
     {
-        return (!host || host == _host) && (!port || port == _lastport); // ok if same settings, fail if other settings
+        if( (host && host != _host) || (port && port != _lastport) )
+            close();
+            // ... and continue connecting to new host/port
+        else
+            return true; // still connected, to same host and port.
     }
 
     sockaddr_in addr;
@@ -289,7 +293,7 @@ bool TcpSocket::SendBytes(const char *str, unsigned int len)
 {
     if(!SOCKETVALID(_s))
         return false;
-    traceprint("SEND: '%s'\n", str);
+    //traceprint("SEND: '%s'\n", str);
     return ::send(_s, str, len, 0) >= 0;
     // TODO: check _GetError()
 }
@@ -379,7 +383,7 @@ static void strToLower(std::string& s)
 HttpSocket::HttpSocket()
 : TcpSocket(),
 _keep_alive(0), _remaining(0), _chunkedTransfer(false), _mustClose(true), _inProgress(false),
-_followRedir(true)
+_followRedir(true), _alwaysHandle(false)
 {
 }
 
@@ -400,45 +404,42 @@ bool HttpSocket::_OnUpdate()
 
     // initiate transfer if queue is not empty, but the socket somehow forgot to proceed
     if(_requestQ.size() && !_inProgress)
-    {
-        if(!(isOpen() || open())) // if the socket is closed, try to re-open
-            return false;
         _DequeueMore();
-    }
 
     return true;
 }
 
 bool HttpSocket::Download(const std::string& url, void *user /* = NULL */)
 {
-    std::string host, file;
-    int port;
-    SplitURI(url, host, file, port);
-    if(port < 0)
-        port = 80;
-    if(!open(host.c_str(), port))
-        return false;
-    return SendGet(file.c_str(), user);
+    Request req;
+    req.user = user;
+    SplitURI(url, req.host, req.resource, req.port);
+    if(req.port < 0)
+        req.port = 80;
+    return SendGet(req, false);
 }
 
 bool HttpSocket::SendGet(const std::string what, void *user /* = NULL */)
 {
-    Request req(what, user);
+    Request req(what, _host, _lastport, user);
     return SendGet(req, false);
 }
 
 bool HttpSocket::QueueGet(const std::string what, void *user /* = NULL */)
 {
-    Request req(what, user);
+    Request req(what, _host, _lastport, user);
     return SendGet(req, true);
 }
 
 bool HttpSocket::SendGet(Request& req, bool enqueue)
 {
+    if(req.host.empty() || !req.port)
+        return false;
+
     std::stringstream r;
     const char *crlf = "\r\n";
     r << "GET " << req.resource << " HTTP/1.1" << crlf;
-    r << "Host: " << _host << crlf;
+    r << "Host: " << req.host << crlf;
     if(_keep_alive)
     {
         r << "Connection: Keep-Alive" << crlf;
@@ -469,8 +470,11 @@ bool HttpSocket::_EnqueueOrSend(const Request& req, bool forceQueue /* = false *
         return true;
     }
     // ok, we can send directly
-    _inProgress = true;
-    return SendBytes(req.header.c_str(), req.header.length());
+    _inProgress = false; // assume fail until we really got some bytes out
+    if(!_OpenRequest(req))
+        return false;
+    _inProgress = SendBytes(req.header.c_str(), req.header.length());
+    return _inProgress;
 }
 
 // called whenever a request is finished completely and the socket checks for more things to send
@@ -479,23 +483,28 @@ void HttpSocket::_DequeueMore(void)
     if(_inProgress)
         _FinishRequest();
 
+    // _inProgress is known to be false here
     if(_requestQ.size()) // still have other requests queued?
-    {
-        _curRequest = _requestQ.front();
-        if(SendBytes(_curRequest.header.c_str(), _curRequest.header.size())) // could we send?
-        {
-            _inProgress = true;
+        if(_EnqueueOrSend(_requestQ.front(), false)) // could we send?
             _requestQ.pop(); // if so, we are done with this request
-        }
-    }
-    
+
     // otherwise, we are done for now. socket is kept alive for future sends. Nothing to do.
+}
+
+bool HttpSocket::_OpenRequest(const Request& req)
+{
+    if(!open(req.host.c_str(), req.port))
+        return false;
+    _inProgress = true;
+    _curRequest = req;
+    return true;
 }
 
 void HttpSocket::_FinishRequest(void)
 {
     _OnRequestDone(); // notify about finished request
     _inProgress = false;
+    _hdrs.clear();
 }
 
 void HttpSocket::_ProcessChunk(void)
@@ -513,7 +522,7 @@ void HttpSocket::_ProcessChunk(void)
         {
             if(_remaining <= _recvSize) // it contains the rest of the chunk, including CRLF
             {
-                _OnRecv(_readptr, _remaining - 2); // implicitly skip CRLF
+                _OnRecvInternal(_readptr, _remaining - 2); // implicitly skip CRLF
                 _readptr += _remaining;
                 _recvSize -= _remaining;
                 _remaining = 0; // done with this one.
@@ -522,7 +531,7 @@ void HttpSocket::_ProcessChunk(void)
             }
             else // buffer did not yet arrive completely
             {
-                _OnRecv(_readptr, _recvSize);
+                _OnRecvInternal(_readptr, _recvSize);
                 _remaining -= _recvSize;
                 _recvSize = 0; // done with the whole buffer, but not with the chunk
                 return; // nothing else to do here
@@ -701,7 +710,7 @@ void HttpSocket::_OnData(void)
     else if(_remaining && _recvSize) // something remaining? if so, we got a header earlier, but not all data
     {
         _remaining -= _recvSize;
-        _OnRecv(_readptr, _recvSize);
+        _OnRecvInternal(_readptr, _recvSize);
 
         if(int(_remaining) < 0)
         {
@@ -720,6 +729,12 @@ void HttpSocket::_OnData(void)
     }
 
     // otherwise, the server sent just the header, with the data following in the next packet
+}
+
+void HttpSocket::_OnRecvInternal(char *buf, unsigned int size)
+{
+    if(_status == 200 || _alwaysHandle)
+        _OnRecv(buf, size);
 }
 
 #endif

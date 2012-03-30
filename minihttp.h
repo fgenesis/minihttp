@@ -93,12 +93,14 @@ enum HttpCode
 
 struct Request
 {
-    Request() : user(NULL) {}
-    Request(const std::string& r, void *u = NULL) 
-        : resource(r), user(u) {}
+    Request() : port(80), user(NULL) {}
+    Request(const std::string& h, const std::string& res, int p = 80, void *u = NULL)
+        : host(h), resource(res), port(80), user(u) {}
 
+    std::string host;
     std::string header; // set by socket
     std::string resource;
+    int port;
     void *user;
 };
 
@@ -113,6 +115,7 @@ public:
     void SetUserAgent(const std::string &s) { _user_agent = s; }
     void SetAcceptEncoding(const std::string& s) { _accept_encoding = s; }
     void SetFollowRedirect(bool follow) { _followRedir = follow; }
+    void SetAlwaysHandle(bool h) { _alwaysHandle = h; }
 
     bool Download(const std::string& url, void *user = NULL);
     bool SendGet(Request& what, bool enqueue);
@@ -142,10 +145,12 @@ protected:
     void _ProcessChunk();
     bool _EnqueueOrSend(const Request& req, bool forceQueue = false);
     void _DequeueMore();
+    bool _OpenRequest(const Request& req);
     void _ParseHeader();
     void _ParseHeaderFields(const char *s, size_t size);
     bool _HandleStatus(); // Returns whether the processed request was successful, or not
     void _FinishRequest();
+    void _OnRecvInternal(char *buf, unsigned int size);
 
     std::string _user_agent;
     std::string _accept_encoding; // Default empty.
@@ -166,6 +171,7 @@ protected:
     bool _chunkedTransfer;
     bool _mustClose; // keep-alive specified, or not
     bool _followRedir; // Default true. Follow 3xx redirects if this is set.
+    bool _alwaysHandle; // Also deliver to _OnRecv() if a non-success code was received.
 };
 
 } // end namespace minihttp
