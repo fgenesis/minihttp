@@ -1,39 +1,30 @@
+/* This program is free software. It comes without any warranty, to
+* the extent permitted by applicable law. You can redistribute it
+* and/or modify it under the terms of the Do What The Fuck You Want
+* To Public License, Version 2, as published by Sam Hocevar. See
+* http://sam.zoy.org/wtfpl/COPYING for more details. */ 
+
 #ifndef MINIHTTPSOCKET_H
 #define MINIHTTPSOCKET_H
 
+
+// ---- Compile config -----
+#define MINIHTTP_SUPPORT_HTTP
+#define MINIHTTP_SUPPORT_SOCKET_SET
+// -------------------------
+
+
+
 #include <string>
-#include <set>
-#include <queue>
 
 namespace minihttp
 {
-
-
-enum Code
-{
-    HTTP_NULL = 0,       // used as a generic "something in the code is wrong" indicator, or initial value
-    HTTP_OK = 200,
-    HTTP_NOTFOUND = 404,
-};
 
 bool InitNetwork();
 void StopNetwork();
 
 bool SplitURI(const std::string& uri, std::string& host, std::string& file);
 
-class TcpSocket;
-class HttpSocket;
-
-struct Request
-{
-    Request() : user(NULL) {}
-    Request(const std::string& r, void *u = NULL) 
-        : resource(r), user(u) {}
-
-    std::string header; // set by socket
-    std::string resource;
-    void *user;
-};
 
 class TcpSocket
 {
@@ -74,13 +65,43 @@ protected:
 
     unsigned int _lastport; // port used in last open() call
 
-    bool _nonblocking;
+    bool _nonblocking; // Default true. If false, the current thread is blocked while waiting for input.
 
-    void *_s; // socket handle. really an int, but to be sure its 64 bit compatible as it seems required on windows, we use this.
+    intptr_t _s; // socket handle. really an int, but to be sure its 64 bit compatible as it seems required on windows, we use this.
 
     std::string _host;
 };
 
+} // end namespace minihttp
+
+
+// ------------------------------------------------------------------------
+
+#ifdef MINIHTTP_SUPPORT_HTTP
+
+#include <map>
+#include <queue>
+
+namespace minihttp
+{
+
+enum HttpCode
+{
+    HTTP_NULL = 0,       // used as a generic "something in the code is wrong" indicator, or initial value
+    HTTP_OK = 200,
+    HTTP_NOTFOUND = 404,
+};
+
+struct Request
+{
+    Request() : user(NULL) {}
+    Request(const std::string& r, void *u = NULL) 
+        : resource(r), user(u) {}
+
+    std::string header; // set by socket
+    std::string resource;
+    void *user;
+};
 
 class HttpSocket : public TcpSocket
 {
@@ -92,6 +113,7 @@ public:
     void SetKeepAlive(unsigned int secs) { _keep_alive = secs; }
     void SetUserAgent(const std::string &s) { _user_agent = s; }
     void SetAcceptEncoding(const std::string& s) { _accept_encoding = s; }
+    void SetFollowRedirect(bool follow) { _followRedir = follow; }
 
     bool SendGet(Request& what, bool enqueue);
     bool SendGet(const std::string what, void *user = NULL);
@@ -138,8 +160,21 @@ protected:
     bool _inProgress;
     bool _chunkedTransfer;
     bool _mustClose; // keep-alive specified, or not
+    bool _followRedir; // Default true. Follow 3xx redirects if this is set.
 };
 
+} // end namespace minihttp
+
+#endif
+
+// ------------------------------------------------------------------------
+
+#ifdef MINIHTTP_SUPPORT_SOCKET_SET
+
+#include <set>
+
+namespace minihttp
+{
 
 class SocketSet
 {
@@ -155,8 +190,10 @@ protected:
     std::set<TcpSocket*> _store;
 };
 
+#endif
 
-} // namespace minihttp
+
+} // end namespace minihttp
 
 
 #endif

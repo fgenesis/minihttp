@@ -1,3 +1,6 @@
+// minihttp.cpp - All functionality required for a minimal TCP/HTTP client packed in one file.
+// Released under the WTFPL (See minihttp.h)
+
 #ifdef _MSC_VER
 #  ifndef _CRT_SECURE_NO_WARNINGS
 #    define _CRT_SECURE_NO_WARNINGS
@@ -24,30 +27,26 @@
 #  define ETIMEDOUT WSAETIMEDOUT
 #  define ECONNRESET WSAECONNRESET
 #  define ENOTCONN WSAENOTCONN
-#  define MAKESOCKET(s) ((SOCKET)(s))
-#  define CASTSOCKET(s) ((void*)(s))
 #else
 #  include <sys/types.h>
 #  include <unistd.h>
 #  include <fcntl.h>
 #  include <sys/socket.h>
 #  include <netdb.h>
-#  define SOCKET_ERROR -1
-#  define INVALID_SOCKET -1
-#  typedef int SOCKET
-#  define MAKESOCKET(s) ((SOCKET)(s))
-#  define CASTSOCKET(s) ((void*)(s))
+#  define SOCKET_ERROR (-1)
+#  define INVALID_SOCKET (SOCKET)(~0)
+#  typedef intptr_t SOCKET
 #endif
 
-#define SOCKETVALID(s) (MAKESOCKET(s) != INVALID_SOCKET)
+#include "minihttp.h"
+
+#define SOCKETVALID(s) ((s) != INVALID_SOCKET)
 
 #ifdef _MSC_VER
 #  define STRNICMP _strnicmp
 #else
 #  define STRNICMP strncasecmp
 #endif
-
-#include "minihttp.h"
 
 #ifdef _DEBUG
 #  define traceprint(...) {printf(__VA_ARGS__);}
@@ -161,20 +160,20 @@ static bool _SetNonBlocking(SOCKET s, bool nonblock)
         return false;
 #ifdef _WIN32
     ULONG tmp = !!nonblock;
-    if(::ioctlsocket(MAKESOCKET(s), FIONBIO, &tmp) == SOCKET_ERROR)
+    if(::ioctlsocket(s, FIONBIO, &tmp) == SOCKET_ERROR)
         return false;
 #else
-    int tmp = ::fcntl(MAKESOCKET(s), F_GETFL);
+    int tmp = ::fcntl(s, F_GETFL);
     if(tmp < 0)
         return false;
-    if(::fcntl(MAKESOCKET(s), F_SETFL, nonblock ? (tmp|O_NONBLOCK) : (tmp|=~O_NONBLOCK)) < 0)
+    if(::fcntl(s, F_SETFL, nonblock ? (tmp|O_NONBLOCK) : (tmp|=~O_NONBLOCK)) < 0)
         return false;
 #endif
     return true;
 }
 
 TcpSocket::TcpSocket()
-: _s(CASTSOCKET(INVALID_SOCKET)), _inbuf(NULL), _inbufSize(0), _recvSize(0),
+: _s(INVALID_SOCKET), _inbuf(NULL), _inbufSize(0), _recvSize(0),
   _readptr(NULL), _lastport(0)
 {
 }
@@ -203,13 +202,13 @@ void TcpSocket::close(void)
 #else
     ::close(_s);
 #endif
-    _s = CASTSOCKET(INVALID_SOCKET);
+    _s = INVALID_SOCKET;
 }
 
 bool TcpSocket::SetNonBlocking(bool nonblock)
 {
     _nonblocking = nonblock;
-    return _SetNonBlocking(MAKESOCKET(_s), nonblock);
+    return _SetNonBlocking(_s, nonblock);
 }
 
 void TcpSocket::SetBufsizeIn(unsigned int s)
@@ -260,14 +259,14 @@ bool TcpSocket::open(const char *host /* = NULL */, unsigned int port /* = 0 */)
         return false;
     }
 
-    if (::connect(MAKESOCKET(s), (sockaddr*)&addr, sizeof(sockaddr)))
+    if (::connect(s, (sockaddr*)&addr, sizeof(sockaddr)))
     {
         traceprint("CONNECT ERROR: %s\n", _GetErrorStr(_GetError()).c_str());
         return false;
     }
 
     _SetNonBlocking(s, _nonblocking); // restore setting if it was set in invalid state. static call because _s is intentionally still invalid here.
-    _s = CASTSOCKET(s); // set the socket handle when we are really sure we are connected, and things are set up
+    _s = s; // set the socket handle when we are really sure we are connected, and things are set up
 
     _OnOpen();
 
@@ -279,7 +278,7 @@ bool TcpSocket::SendBytes(const char *str, unsigned int len)
     if(!SOCKETVALID(_s))
         return false;
     traceprint("SEND: '%s'\n", str);
-    return ::send(MAKESOCKET(_s), str, len, 0) >= 0;
+    return ::send(_s, str, len, 0) >= 0;
     // TODO: check _GetError()
 }
 
@@ -308,7 +307,7 @@ bool TcpSocket::update(void)
     if(!_inbuf)
         SetBufsizeIn(DEFAULT_BUFSIZE);
 
-    int bytes = recv(MAKESOCKET(_s), _writeptr, _writeSize, 0); // last char is used as string terminator
+    int bytes = recv(_s, _writeptr, _writeSize, 0); // last char is used as string terminator
 
     if(bytes > 0) // we received something
     {
@@ -357,10 +356,12 @@ bool TcpSocket::update(void)
 // ==========================
 // ===== HTTP SPECIFIC ======
 // ==========================
+#ifdef MINIHTTP_SUPPORT_HTTP
 
 HttpSocket::HttpSocket()
 : TcpSocket(),
-_keep_alive(0), _remaining(0), _chunkedTransfer(false), _mustClose(true), _inProgress(false)
+_keep_alive(0), _remaining(0), _chunkedTransfer(false), _mustClose(true), _inProgress(false),
+_followRedir(true)
 {
 }
 
@@ -634,11 +635,12 @@ void HttpSocket::_OnData(void)
     // otherwise, the server sent just the header, with the data following in the next packet
 }
 
-
+#endif
 
 // ===========================
 // ===== SOCKET SET ==========
 // ===========================
+#ifdef MINIHTTP_SUPPORT_SOCKET_SET
 
 SocketSet::~SocketSet()
 {
@@ -678,5 +680,8 @@ void SocketSet::add(TcpSocket *s)
     s->SetNonBlocking(true);
     _store.insert(s);
 }
+
+#endif
+
 
 } // namespace minihttp
