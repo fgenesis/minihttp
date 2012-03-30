@@ -128,7 +128,10 @@ static bool _Resolve(const char *host, unsigned int port, struct sockaddr_in *ad
     return false;
 }
 
-bool SplitURI(const std::string& uri, std::string& host, std::string& file)
+// FIXME: this does currently not handle links like:
+// http://example.com/index.html#pos
+
+bool SplitURI(const std::string& uri, std::string& host, std::string& file, int& port)
 {
     const char *p = uri.c_str();
     const char *sl = strstr(p, "//");
@@ -151,6 +154,15 @@ bool SplitURI(const std::string& uri, std::string& host, std::string& file)
         host = uri.substr(offs, sl - p);
         file = sl;
     }
+
+    port = -1;
+    size_t colon = host.find(':');
+    if(colon != std::string::npos)
+    {
+        port = atoi(host.c_str() + colon);
+        host.erase(port);
+    }
+
     return true;
 }
 
@@ -353,10 +365,16 @@ bool TcpSocket::update(void)
     return true;
 }
 
+
 // ==========================
 // ===== HTTP SPECIFIC ======
 // ==========================
 #ifdef MINIHTTP_SUPPORT_HTTP
+
+static void strToLower(std::string& s)
+{
+    std::transform(s.begin(), s.end(), s.begin(), tolower);
+}
 
 HttpSocket::HttpSocket()
 : TcpSocket(),
@@ -389,6 +407,18 @@ bool HttpSocket::_OnUpdate()
     }
 
     return true;
+}
+
+bool HttpSocket::Download(const std::string& url, void *user /* = NULL */)
+{
+    std::string host, file;
+    int port;
+    SplitURI(url, host, file, port);
+    if(port < 0)
+        port = 80;
+    if(!open(host.c_str(), port))
+        return false;
+    return SendGet(file.c_str(), user);
 }
 
 bool HttpSocket::SendGet(const std::string what, void *user /* = NULL */)
@@ -529,6 +559,91 @@ void HttpSocket::_ProcessChunk(void)
     }
 }
 
+void HttpSocket::_ParseHeaderFields(const char *s, size_t size)
+{
+    // Field: Entry data\r\n
+
+    const char *maxs = s + size;
+    const char *colon, *entry;
+    const char *entryEnd = s; // last char of entry data
+    while(s < maxs)
+    {
+        while(isspace(*s))
+        {
+            ++s;
+            if(s >= maxs)
+                return;
+        }
+        colon = strchr(s, ':');
+        if(!colon)
+            return;
+        entryEnd = strchr(colon, '\n');
+        if(!entryEnd)
+            return;
+        while(entryEnd[-1] == '\n' || entryEnd[-1] == '\r')
+            --entryEnd;
+        entry = colon + 1;
+        while(isspace(*entry))
+        {
+            ++entry;
+            if(entry > entryEnd) // Field, but no entry? (Field:   \n\r)
+            {
+                s = entryEnd;
+                continue;
+            }
+        }
+        std::string field(s, colon - s);
+        strToLower(field);
+        _hdrs[field] = std::string(entry, entryEnd - entry);
+        s = entryEnd;
+    }
+}
+
+const char *HttpSocket::Hdr(const char *h)
+{
+    std::map<std::string, std::string>::iterator it = _hdrs.find(h);
+    return it == _hdrs.end() ? NULL : it->second.c_str();
+}
+
+static int safeatoi(const char *s)
+{
+    return s ? atoi(s) : 0;
+}
+
+bool HttpSocket::_HandleStatus()
+{
+    _remaining = _contentLen = safeatoi(Hdr("content-length"));
+
+    const char *encoding = Hdr("transfer-encoding");
+    _chunkedTransfer = encoding && !STRNICMP(encoding, "chunked", 7);
+    
+    const char *conn = Hdr("connection"); // if its not keep-alive, server will close it, so we can too
+    _mustClose = !conn || STRNICMP(conn, "keep-alive", 10);
+
+    if(!(_chunkedTransfer || _contentLen))
+        traceprint("_ParseHeader: Not chunked transfer and content-length==0, this will go fail");
+
+    switch(_status)
+    {
+        case 200:
+            return true;
+
+        case 301:
+        case 302:
+        case 303:
+        case 307:
+        case 308:
+            if(_followRedir)
+                if(const char *loc = Hdr("location"))
+                    Download(loc, GetCurrentRequest()->user);
+            return false;
+
+        default:
+            return false;
+    }
+}
+
+
 void HttpSocket::_ParseHeader(void)
 {
     // if we are here, we expect a header
@@ -536,7 +651,7 @@ void HttpSocket::_ParseHeader(void)
     _tmpHdr += _inbuf;
     const char *hptr = _tmpHdr.c_str();
 
-    if((_recvSize >= 4 || _tmpHdr.size() >= 4) && memcmp("HTTP", hptr, 4))
+    if((_recvSize >= 5 || _tmpHdr.size() >= 5) && memcmp("HTTP/", hptr, 5))
     {
         traceprint("_ParseHeader: not HTTP stream\n");
         return;
@@ -548,52 +663,24 @@ void HttpSocket::_ParseHeader(void)
         traceprint("_ParseHeader: could not find end-of-header marker, or incomplete buf; delaying.\n");
         return;
     }
-    std::transform(_tmpHdr.begin(), _tmpHdr.end(), _tmpHdr.begin(), tolower);
 
-    const char *statuscode = strchr(hptr, ' ');
-    if(!statuscode)
+    hptr = strchr(hptr + 5, ' '); // skip "HTTP/", already known
+    if(!hptr)
         return; // WTF?
+    ++hptr; // number behind first space is the status code
+    _status = atoi(hptr);
 
-    ++statuscode;
-    _status = atoi(statuscode);
-
+    // Default values
     _chunkedTransfer = false;
     _contentLen = 0; // yet unknown
 
-    const char *content_length = "content-length: ";
-    const char *lenptr = strstr(hptr, content_length);
-    if(lenptr)
-    {
-        lenptr += strlen(content_length);
-        _remaining = _contentLen = atoi(lenptr);
-    }
-    else
-    {
-        const char *transfer_encoding = "transfer-encoding: ";
-        lenptr = strstr(hptr, transfer_encoding);
-        if(lenptr)
-        {
-            lenptr += strlen(transfer_encoding);
-            if(STRNICMP(lenptr, "chunked", 7))
-            {
-                traceprint("_ParseHeader: Unknown content length and transfer encoding!\n");
-                return;
-            }
-            _chunkedTransfer = true;
-        }
-    }
+    hptr = strstr(hptr, "\r\n");
+    _ParseHeaderFields(hptr + 2, hdrend - hptr);
 
-    const char *connection = "connection: ";
-    const char *conptr = strstr(hptr, connection);
-    _mustClose = true;
-    if(conptr)
-    {
-        conptr += strlen(connection);
-        _mustClose = (STRNICMP(conptr, "keep-alive", 10) != 0); // if its not keep-alive, server will close it, so we can too
-    }
-
-    if(!(_chunkedTransfer || _contentLen))
-        traceprint("_ParseHeader: Not chunked transfer and content-length==0, this will go fail");
+    // FIXME: return value indicates success.
+    // Bail out on non-success, or at least make it so that _OnRecv() is not called.
+    // (Unless an override bool is given that even non-successful answers get their data delivered!)
+    _HandleStatus();
 
     // get ready
     _readptr = strstr(_inbuf, "\r\n\r\n") + 4; // skip double newline. must have been found in hptr earlier.

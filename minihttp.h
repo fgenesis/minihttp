@@ -1,8 +1,8 @@
 /* This program is free software. It comes without any warranty, to
 * the extent permitted by applicable law. You can redistribute it
 * and/or modify it under the terms of the Do What The Fuck You Want
-* To Public License, Version 2, as published by Sam Hocevar. See
-* http://sam.zoy.org/wtfpl/COPYING for more details. */ 
+* To Public License, Version 2, as published by Sam Hocevar.
+* See http://sam.zoy.org/wtfpl/COPYING for more details. */
 
 #ifndef MINIHTTPSOCKET_H
 #define MINIHTTPSOCKET_H
@@ -23,7 +23,7 @@ namespace minihttp
 bool InitNetwork();
 void StopNetwork();
 
-bool SplitURI(const std::string& uri, std::string& host, std::string& file);
+bool SplitURI(const std::string& uri, std::string& host, std::string& file, int& port);
 
 
 class TcpSocket
@@ -87,7 +87,6 @@ namespace minihttp
 
 enum HttpCode
 {
-    HTTP_NULL = 0,       // used as a generic "something in the code is wrong" indicator, or initial value
     HTTP_OK = 200,
     HTTP_NOTFOUND = 404,
 };
@@ -115,18 +114,20 @@ public:
     void SetAcceptEncoding(const std::string& s) { _accept_encoding = s; }
     void SetFollowRedirect(bool follow) { _followRedir = follow; }
 
+    bool Download(const std::string& url, void *user = NULL);
     bool SendGet(Request& what, bool enqueue);
     bool SendGet(const std::string what, void *user = NULL);
     bool QueueGet(const std::string what, void *user = NULL);
 
-    unsigned int GetRemaining(void) { return _remaining; }
+    unsigned int GetRemaining() { return _remaining; }
 
-    unsigned int GetStatusCode(void) { return _status; }
-    unsigned int GetContentLen(void) { return _contentLen; }
-    bool ChunkedTransfer(void) { return _chunkedTransfer; }
-    bool ExpectMoreData(void) { return _remaining || _chunkedTransfer; }
+    unsigned int GetStatusCode() { return _status; }
+    unsigned int GetContentLen() { return _contentLen; }
+    bool ChunkedTransfer() { return _chunkedTransfer; }
+    bool ExpectMoreData() { return _remaining || _chunkedTransfer; }
 
     Request *GetCurrentRequest() { return _inProgress ? &_curRequest : NULL; }
+    const char *Hdr(const char *h);
 
 protected:
 
@@ -138,14 +139,16 @@ protected:
     // new ones:
     virtual void _OnRequestDone() {}
 
-    void _ProcessChunk(void);
+    void _ProcessChunk();
     bool _EnqueueOrSend(const Request& req, bool forceQueue = false);
-    void _DequeueMore(void);
-    void _ParseHeader(void);
-    void _FinishRequest(void);
+    void _DequeueMore();
+    void _ParseHeader();
+    void _ParseHeaderFields(const char *s, size_t size);
+    bool _HandleStatus(); // Returns whether the processed request was successful, or not
+    void _FinishRequest();
 
     std::string _user_agent;
-    std::string _accept_encoding;
+    std::string _accept_encoding; // Default empty.
     std::string _tmpHdr; // used to save the http header if the incoming buffer was not large enough
 
     unsigned int _keep_alive; // http related
@@ -155,6 +158,8 @@ protected:
     unsigned int _status; // http status code, HTTP_OK if things are good
 
     std::queue<Request> _requestQ;
+    std::map<std::string, std::string> _hdrs; // Maps HTTP header fields to their values
+
     Request _curRequest;
 
     bool _inProgress;
@@ -180,11 +185,11 @@ class SocketSet
 {
 public:
     virtual ~SocketSet();
-    void deleteAll(void);
-    bool update(void);
+    void deleteAll();
+    bool update();
     void add(TcpSocket *s);
     void remove(TcpSocket *s);
-    inline size_t size(void) { return _store.size(); }
+    inline size_t size() { return _store.size(); }
 
 protected:
     std::set<TcpSocket*> _store;
