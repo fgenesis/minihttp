@@ -230,7 +230,7 @@ void TcpSocket::SetBufsizeIn(unsigned int s)
     if(s != _inbufSize)
         _inbuf = (char*)realloc(_inbuf, s);
     _inbufSize = s;
-    _writeSize = s - 1; // FIXME: why?
+    _writeSize = s - 1;
     _readptr = _writeptr = _inbuf;
 }
 
@@ -364,7 +364,7 @@ bool TcpSocket::update(void)
 #endif
             return false;
         }
-        traceprint("SOCKET UPDATE: %s\n", _GetErrorStr(e).c_str());
+        traceprint("SOCKET UPDATE ERROR: (%d): %s\n", e, _GetErrorStr(e).c_str());
     }
     return true;
 }
@@ -383,7 +383,7 @@ static void strToLower(std::string& s)
 HttpSocket::HttpSocket()
 : TcpSocket(),
 _keep_alive(0), _remaining(0), _chunkedTransfer(false), _mustClose(true), _inProgress(false),
-_followRedir(true), _alwaysHandle(false)
+_followRedir(true), _alwaysHandle(false), _status(0)
 {
 }
 
@@ -402,8 +402,11 @@ bool HttpSocket::_OnUpdate()
     if(!TcpSocket::_OnUpdate())
         return false;
 
+    if(_inProgress && !_chunkedTransfer && !_remaining && _status)
+        _FinishRequest();
+
     // initiate transfer if queue is not empty, but the socket somehow forgot to proceed
-    if(_requestQ.size() && !_inProgress)
+    if(_requestQ.size() && !_remaining && !_chunkedTransfer && !_inProgress)
         _DequeueMore();
 
     return true;
@@ -470,7 +473,6 @@ bool HttpSocket::_EnqueueOrSend(const Request& req, bool forceQueue /* = false *
         return true;
     }
     // ok, we can send directly
-    _inProgress = false; // assume fail until we really got some bytes out
     if(!_OpenRequest(req))
         return false;
     _inProgress = SendBytes(req.header.c_str(), req.header.length());
@@ -480,8 +482,7 @@ bool HttpSocket::_EnqueueOrSend(const Request& req, bool forceQueue /* = false *
 // called whenever a request is finished completely and the socket checks for more things to send
 void HttpSocket::_DequeueMore(void)
 {
-    if(_inProgress)
-        _FinishRequest();
+    _FinishRequest(); // In case this was not done yet.
 
     // _inProgress is known to be false here
     if(_requestQ.size()) // still have other requests queued?
@@ -493,18 +494,27 @@ void HttpSocket::_DequeueMore(void)
 
 bool HttpSocket::_OpenRequest(const Request& req)
 {
+    if(_inProgress)
+    {
+        traceprint("HttpSocket::_OpenRequest(): _inProgress == true, should not be called.");
+        return false;
+    }
     if(!open(req.host.c_str(), req.port))
         return false;
     _inProgress = true;
     _curRequest = req;
+    _status = 0;
     return true;
 }
 
 void HttpSocket::_FinishRequest(void)
 {
-    _OnRequestDone(); // notify about finished request
-    _inProgress = false;
-    _hdrs.clear();
+    if(_inProgress)
+    {
+        _OnRequestDone(); // notify about finished request
+        _inProgress = false;
+        _hdrs.clear();
+    }
 }
 
 void HttpSocket::_ProcessChunk(void)
@@ -608,9 +618,9 @@ void HttpSocket::_ParseHeaderFields(const char *s, size_t size)
     }
 }
 
-const char *HttpSocket::Hdr(const char *h)
+const char *HttpSocket::Hdr(const char *h) const
 {
-    std::map<std::string, std::string>::iterator it = _hdrs.find(h);
+    std::map<std::string, std::string>::const_iterator it = _hdrs.find(h);
     return it == _hdrs.end() ? NULL : it->second.c_str();
 }
 
@@ -629,7 +639,7 @@ bool HttpSocket::_HandleStatus()
     const char *conn = Hdr("connection"); // if its not keep-alive, server will close it, so we can too
     _mustClose = !conn || STRNICMP(conn, "keep-alive", 10);
 
-    if(!(_chunkedTransfer || _contentLen))
+    if(!(_chunkedTransfer || _contentLen) && _status == 200)
         traceprint("_ParseHeader: Not chunked transfer and content-length==0, this will go fail");
 
     switch(_status)
@@ -644,7 +654,10 @@ bool HttpSocket::_HandleStatus()
         case 308:
             if(_followRedir)
                 if(const char *loc = Hdr("location"))
-                    Download(loc, GetCurrentRequest()->user);
+                {
+                    traceprint("Following HTTP redirect to: %s\n", loc);
+                    Download(loc, _curRequest.user);
+                }
             return false;
 
         default:
@@ -655,8 +668,6 @@ bool HttpSocket::_HandleStatus()
 
 void HttpSocket::_ParseHeader(void)
 {
-    // if we are here, we expect a header
-    // TODO: this can be more optimized
     _tmpHdr += _inbuf;
     const char *hptr = _tmpHdr.c_str();
 
@@ -672,6 +683,8 @@ void HttpSocket::_ParseHeader(void)
         traceprint("_ParseHeader: could not find end-of-header marker, or incomplete buf; delaying.\n");
         return;
     }
+
+    //traceprint(hptr);
 
     hptr = strchr(hptr + 5, ' '); // skip "HTTP/", already known
     if(!hptr)
@@ -751,21 +764,25 @@ SocketSet::~SocketSet()
 
 void SocketSet::deleteAll(void)
 {
-    for(std::set<TcpSocket*>::iterator it = _store.begin(); it != _store.end(); ++it)
-        delete *it;
+    for(Store::iterator it = _store.begin(); it != _store.end(); ++it)
+        delete it->first;
     _store.clear();
 }
 
 bool SocketSet::update(void)
 {
     bool interesting = false;
-    std::set<TcpSocket*>::iterator it = _store.begin();
+    Store::iterator it = _store.begin();
     for( ; it != _store.end(); )
     {
-        interesting = (*it)->update() || interesting;
-        // HACK: TEMP
-        if(!(*it)->isOpen())
+        TcpSocket *sock =  it->first;
+        SocketSetData& sdata = it->second;
+        interesting = sock->update() || interesting;
+        if(sdata.deleteWhenDone && !sock->isOpen() && !sock->HasPendingTask())
+        {
+            delete sock;
             _store.erase(it++);
+        }
         else
            ++it;
     }
@@ -777,10 +794,12 @@ void SocketSet::remove(TcpSocket *s)
     _store.erase(s);
 }
 
-void SocketSet::add(TcpSocket *s)
+void SocketSet::add(TcpSocket *s, bool deleteWhenDone /* = true */)
 {
     s->SetNonBlocking(true);
-    _store.insert(s);
+    SocketSetData sdata;
+    sdata.deleteWhenDone = deleteWhenDone;
+    _store[s] = sdata;
 }
 
 #endif

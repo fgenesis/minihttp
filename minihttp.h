@@ -32,6 +32,8 @@ public:
     TcpSocket();
     virtual ~TcpSocket();
 
+    virtual bool HasPendingTask() const { return false; }
+
     bool open(const char *addr = NULL, unsigned int port = 0);
     void close();
     bool update(); // returns true if something interesting happened (incoming data, closed connection, etc)
@@ -111,6 +113,11 @@ public:
     HttpSocket();
     virtual ~HttpSocket();
 
+    virtual bool HasPendingTask() const
+    {
+        return ExpectMoreData() || _requestQ.size();
+    }
+
     void SetKeepAlive(unsigned int secs) { _keep_alive = secs; }
     void SetUserAgent(const std::string &s) { _user_agent = s; }
     void SetAcceptEncoding(const std::string& s) { _accept_encoding = s; }
@@ -122,15 +129,15 @@ public:
     bool SendGet(const std::string what, void *user = NULL);
     bool QueueGet(const std::string what, void *user = NULL);
 
-    unsigned int GetRemaining() { return _remaining; }
+    unsigned int GetRemaining() const { return _remaining; }
 
-    unsigned int GetStatusCode() { return _status; }
-    unsigned int GetContentLen() { return _contentLen; }
-    bool ChunkedTransfer() { return _chunkedTransfer; }
-    bool ExpectMoreData() { return _remaining || _chunkedTransfer; }
+    unsigned int GetStatusCode() const { return _status; }
+    unsigned int GetContentLen() const { return _contentLen; }
+    bool ChunkedTransfer() const { return _chunkedTransfer; }
+    bool ExpectMoreData() const { return _remaining || _chunkedTransfer; }
 
-    Request *GetCurrentRequest() { return _inProgress ? &_curRequest : NULL; }
-    const char *Hdr(const char *h);
+    const Request &GetCurrentRequest() const { return _curRequest; }
+    const char *Hdr(const char *h) const;
 
 protected:
 
@@ -182,7 +189,7 @@ protected:
 
 #ifdef MINIHTTP_SUPPORT_SOCKET_SET
 
-#include <set>
+#include <map>
 
 namespace minihttp
 {
@@ -193,12 +200,22 @@ public:
     virtual ~SocketSet();
     void deleteAll();
     bool update();
-    void add(TcpSocket *s);
+    void add(TcpSocket *s, bool deleteWhenDone = true);
+    bool has(TcpSocket *s);
     void remove(TcpSocket *s);
     inline size_t size() { return _store.size(); }
 
 protected:
-    std::set<TcpSocket*> _store;
+
+    struct SocketSetData
+    {
+        bool deleteWhenDone;
+        // To be extended
+    };
+    
+    typedef std::map<TcpSocket*, SocketSetData> Store;
+
+    Store _store;
 };
 
 #endif
