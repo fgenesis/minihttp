@@ -141,6 +141,7 @@ public:
 
 protected:
 
+    virtual void _OnClose();
     virtual void _OnData(); // data received callback. Internal, should only be overloaded to call _OnRecv()
     virtual void _OnRecv(char *buf, unsigned int size) = 0;
     virtual void _OnOpen(); // called when opene
@@ -218,10 +219,9 @@ protected:
     Store _store;
 };
 
-#endif
-
-
 } // end namespace minihttp
+
+#endif
 
 
 #endif

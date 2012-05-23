@@ -744,6 +744,12 @@ void HttpSocket::_OnData(void)
     // otherwise, the server sent just the header, with the data following in the next packet
 }
 
+void HttpSocket::_OnClose()
+{
+    if(!ExpectMoreData())
+        _FinishRequest();
+}
+
 void HttpSocket::_OnRecvInternal(char *buf, unsigned int size)
 {
     if(_status == 200 || _alwaysHandle)
