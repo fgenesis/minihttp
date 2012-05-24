@@ -35,7 +35,7 @@
 #  include <netdb.h>
 #  define SOCKET_ERROR (-1)
 #  define INVALID_SOCKET (SOCKET)(~0)
-#  typedef intptr_t SOCKET
+   typedef intptr_t SOCKET;
 #endif
 
 #include "minihttp.h"
