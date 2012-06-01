@@ -15,6 +15,7 @@
 #include <string.h>
 #include <sstream>
 #include <cctype>
+#include <cerrno>
 #include <algorithm>
 
 #ifdef _WIN32
@@ -207,7 +208,7 @@ void TcpSocket::close(void)
     if(!SOCKETVALID(_s))
         return;
 
-    _OnClose();
+    _OnCloseInternal();
 
 #ifdef _WIN32
     ::closesocket((SOCKET)_s);
@@ -215,6 +216,11 @@ void TcpSocket::close(void)
     ::close(_s);
 #endif
     _s = INVALID_SOCKET;
+}
+
+void TcpSocket::_OnCloseInternal()
+{
+    _OnClose();
 }
 
 bool TcpSocket::SetNonBlocking(bool nonblock)
@@ -397,6 +403,12 @@ void HttpSocket::_OnOpen()
     _chunkedTransfer = false;
 }
 
+void HttpSocket::_OnCloseInternal()
+{
+    if(!IsRedirecting() || _alwaysHandle)
+        _OnClose();
+}
+
 bool HttpSocket::_OnUpdate()
 {
     if(!TcpSocket::_OnUpdate())
@@ -511,7 +523,8 @@ void HttpSocket::_FinishRequest(void)
 {
     if(_inProgress)
     {
-        _OnRequestDone(); // notify about finished request
+        if(!IsRedirecting() || _alwaysHandle)
+            _OnRequestDone(); // notify about finished request
         _inProgress = false;
         _hdrs.clear();
     }
@@ -663,6 +676,20 @@ bool HttpSocket::_HandleStatus()
         default:
             return false;
     }
+}
+
+bool HttpSocket::IsRedirecting() const
+{
+	switch(_status)
+	{
+		case 301:
+		case 302:
+		case 303:
+		case 307:
+		case 308:
+			return true;
+	}
+	return false;
 }
 
 
