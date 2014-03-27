@@ -10,15 +10,8 @@
 #  endif
 #endif
 
-#include <stdio.h>
-#include <stdlib.h>
-#include <string.h>
-#include <sstream>
-#include <cctype>
-#include <cerrno>
-#include <algorithm>
-
 #ifdef _WIN32
+#  undef UNICODE
 #  ifndef _WIN32_WINNT
 #    define _WIN32_WINNT 0x0501
 #  endif
@@ -28,6 +21,7 @@
 #  define ETIMEDOUT WSAETIMEDOUT
 #  define ECONNRESET WSAECONNRESET
 #  define ENOTCONN WSAENOTCONN
+#  include <io.h>
 #else
 #  include <sys/types.h>
 #  include <unistd.h>
@@ -38,6 +32,14 @@
 #  define INVALID_SOCKET (SOCKET)(~0)
    typedef intptr_t SOCKET;
 #endif
+
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <sstream>
+#include <cctype>
+#include <cerrno>
+#include <algorithm>
 
 #include "minihttp.h"
 
