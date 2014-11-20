@@ -103,7 +103,7 @@ void StopNetwork()
 
 static bool _Resolve(const char *host, unsigned int port, struct sockaddr_in *addr)
 {
-    char port_str[15];
+    char port_str[16];
     sprintf(port_str, "%u", port);
 
     struct addrinfo hnt, *res = 0;
@@ -594,11 +594,9 @@ void HttpSocket::_ProcessChunk(void)
 
 void HttpSocket::_ParseHeaderFields(const char *s, size_t size)
 {
-    // Field: Entry data\r\n
+    // Key: Value data\r\n
 
-    const char *maxs = s + size;
-    const char *colon, *entry;
-    const char *entryEnd = s; // last char of entry data
+    const char * const maxs = s + size;
     while(s < maxs)
     {
         while(isspace(*s))
@@ -607,28 +605,21 @@ void HttpSocket::_ParseHeaderFields(const char *s, size_t size)
             if(s >= maxs)
                 return;
         }
-        colon = strchr(s, ':');
+        const char * const colon = strchr(s, ':');
         if(!colon)
             return;
-        entryEnd = strchr(colon, '\n');
-        if(!entryEnd)
+        const char *valEnd = strchr(colon, '\n'); // last char of val data
+        if(!valEnd)
             return;
-        while(entryEnd[-1] == '\n' || entryEnd[-1] == '\r')
-            --entryEnd;
-        entry = colon + 1;
-        while(isspace(*entry))
-        {
-            ++entry;
-            if(entry > entryEnd) // Field, but no entry? (Field:   \n\r)
-            {
-                s = entryEnd;
-                continue;
-            }
-        }
-        std::string field(s, colon - s);
-        strToLower(field);
-        _hdrs[field] = std::string(entry, entryEnd - entry);
-        s = entryEnd;
+        while(valEnd[-1] == '\n' || valEnd[-1] == '\r') // skip backwards if necessary
+            --valEnd;
+        const char *val = colon + 1; // value starts after ':' ...
+        while(isspace(*val) && val < valEnd) // skip spaces after the colon
+            ++val;
+        std::string key(s, colon - s);
+        strToLower(key);
+        _hdrs[key] = std::string(val, valEnd - val);
+        s = valEnd;
     }
 }
 
