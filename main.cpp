@@ -22,6 +22,8 @@ protected:
     virtual void _OnOpen()
     {
         puts("_OnOpen()");
+        minihttp::SSLResult sr = verifySSL();
+        printf("SSL status flags (0 is good): 0x%x\n", sr);
         minihttp::HttpSocket::_OnOpen();
     }
 
@@ -30,7 +32,7 @@ protected:
         printf("_OnRequestDone(): %s\n", GetCurrentRequest().resource.c_str());
     }
 
-    virtual void _OnRecv(char *buf, unsigned int size)
+    virtual void _OnRecv(void *buf, unsigned int size)
     {
         if(!size)
             return;
@@ -48,9 +50,10 @@ int main(int argc, char *argv[])
     ht->SetKeepAlive(3);
 
     ht->SetBufsizeIn(64 * 1024);
-
-    ht->Download("http://www.ietf.org/rfc/rfc2616.txt");
-    ht->Download("http://example.com"); // Queue another one
+    //ht->Download("http://www.ietf.org/rfc/rfc2616.txt");
+    //ht->Download("http://example.com"); // Queue another one
+    //ht->Download("https://example.com"); // SSL connection
+    ht->Download("raw.githubusercontent.com/fgenesis/minihttp/master/minihttp.h"); // transparent HTTP -> HTTPS redirection
 
     minihttp::SocketSet ss;
 

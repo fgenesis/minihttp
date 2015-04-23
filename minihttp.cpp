@@ -39,6 +39,14 @@
 #include <cctype>
 #include <cerrno>
 #include <algorithm>
+#include <assert.h>
+
+#ifdef MINIHTTP_USE_POLARSSL
+#  include "polarssl/net.h"
+#  include "polarssl/ssl.h"
+#  include "polarssl/entropy.h"
+#  include "polarssl/ctr_drbg.h"
+#endif
 
 #include "minihttp.h"
 
@@ -58,6 +66,71 @@
 
 namespace minihttp {
 
+#ifdef MINIHTTP_USE_POLARSSL
+// ------------------------ SSL STUFF -------------------------
+bool HasSSL() { return true; }
+
+struct SSLCtx
+{
+    SSLCtx() : _inited(0)
+    {
+        entropy_init(&entropy);
+        x509_crt_init(&cacert);
+        memset(&ssl, 0, sizeof(ssl_context));
+    }
+    ~SSLCtx()
+    {
+        entropy_free(&entropy);
+        x509_crt_free(&cacert);
+        ssl_free(&ssl);
+        if(_inited & 1)
+            ctr_drbg_free(&ctr_drbg);
+        if(_inited & 2)
+            ssl_free(&ssl);
+    }
+    bool init()
+    {
+        const char *pers = "minihttp";
+        const size_t perslen = strlen(pers);
+        
+        int err = ctr_drbg_init(&ctr_drbg, entropy_func, &entropy, (unsigned char *)pers, perslen);
+        if(err)
+        {
+            traceprint("SSLCtx::init(): ctr_drbg_init() returned %d\n", err);
+            return false;
+        }
+        _inited |= 1;
+        
+        err = ssl_init(&ssl);
+        if(err)
+        {
+            traceprint("SSLCtx::init(): ssl_init() returned %d\n", err);
+            return false;
+        }
+        _inited |= 2;
+
+        return true;
+    }
+    void reset()
+    {
+        ssl_session_reset(&ssl);
+    }
+
+    entropy_context entropy;
+    ctr_drbg_context ctr_drbg;
+    ssl_context ssl;
+    x509_crt cacert;
+
+private:
+    unsigned _inited;
+};
+
+
+// ------------------------------------------------------------
+#else// MINIHTTP_USE_POLARSSL
+bool HasSSL() { return false; }
+#endif
+
 #define DEFAULT_BUFSIZE 4096
 
 inline int _GetError()
@@ -71,14 +144,19 @@ inline int _GetError()
 
 inline std::string _GetErrorStr(int e)
 {
+    std::string ret;
 #ifdef _WIN32
     LPTSTR s;
     ::FormatMessage(FORMAT_MESSAGE_ALLOCATE_BUFFER | FORMAT_MESSAGE_FROM_SYSTEM, NULL, e, 0, (LPTSTR)&s, 0, NULL);
-    std::string ret = s;
+    if(s)
+        ret = s;
     ::LocalFree(s);
-    return ret;
+#else
+     const char *s = strerror(e);
+     if(s)
+         ret = s;
 #endif
-    return strerror(e);
+    return ret;
 }
 
 bool InitNetwork()
@@ -133,18 +211,27 @@ static bool _Resolve(const char *host, unsigned int port, struct sockaddr_in *ad
 // FIXME: this does currently not handle links like:
 // http://example.com/index.html#pos
 
-bool SplitURI(const std::string& uri, std::string& host, std::string& file, int& port)
+bool SplitURI(const std::string& uri, std::string& host, std::string& file, int& port, bool& useSSL)
 {
     const char *p = uri.c_str();
     const char *sl = strstr(p, "//");
     unsigned int offs = 0;
+    bool ssl = false;
     if(sl)
     {
-        offs = 7;
-        if(strncmp(p, "http://", offs))
+        if(strncmp(p, "http://", 7) == 0)
+            offs = 7;
+        else if(strncmp(p, "https://", 8) == 0)
+        {
+            ssl = true;
+            offs = 8;
+        }
+        else
             return false;
+
         p = sl + 2;
     }
+
     sl = strchr(p, '/');
     if(!sl)
     {
@@ -164,6 +251,7 @@ bool SplitURI(const std::string& uri, std::string& host, std::string& file, int&
         port = atoi(host.c_str() + colon);
         host.erase(port);
     }
+    useSSL = ssl;
 
     return true;
 }
@@ -172,7 +260,12 @@ static bool _SetNonBlocking(SOCKET s, bool nonblock)
 {
     if(!SOCKETVALID(s))
         return false;
-#ifdef _WIN32
+#ifdef MINIHTTP_USE_POLARSSL
+    if(nonblock)
+        return net_set_nonblock(s) == 0;
+    else
+        return net_set_block(s) == 0;
+#elif defined(_WIN32)
     ULONG tmp = !!nonblock;
     if(::ioctlsocket(s, FIONBIO, &tmp) == SOCKET_ERROR)
         return false;
@@ -188,7 +281,7 @@ static bool _SetNonBlocking(SOCKET s, bool nonblock)
 
 TcpSocket::TcpSocket()
 : _s(INVALID_SOCKET), _inbuf(NULL), _inbufSize(0), _recvSize(0),
-  _readptr(NULL), _lastport(0)
+  _readptr(NULL), _lastport(0), _sslctx(NULL)
 {
 }
 
@@ -197,6 +290,9 @@ TcpSocket::~TcpSocket()
     close();
     if(_inbuf)
         free(_inbuf);
+#ifdef MINIHTTP_USE_POLARSSL
+    shutdownSSL();
+#endif
 }
 
 bool TcpSocket::isOpen(void)
@@ -211,11 +307,18 @@ void TcpSocket::close(void)
 
     _OnCloseInternal();
 
-#ifdef _WIN32
-    ::closesocket((SOCKET)_s);
+#ifdef MINIHTTP_USE_POLARSSL
+    if(_sslctx)
+        ((SSLCtx*)_sslctx)->reset();
+    net_close(_s);
 #else
+#  ifdef _WIN32
+    ::closesocket((SOCKET)_s);
+#  else
     ::close(_s);
+#  endif
 #endif
+
     _s = INVALID_SOCKET;
 }
 
@@ -241,33 +344,18 @@ void TcpSocket::SetBufsizeIn(unsigned int s)
     _readptr = _writeptr = _inbuf;
 }
 
-bool TcpSocket::open(const char *host /* = NULL */, unsigned int port /* = 0 */)
+static bool _openSocket(SOCKET *ps, const char *host, unsigned port)
 {
-    if(isOpen())
+#ifdef MINIHTTP_USE_POLARSSL
+    int s;
+    int err = net_connect(&s, host, port);
+    if(err)
     {
-        if( (host && host != _host) || (port && port != _lastport) )
-            close();
-            // ... and continue connecting to new host/port
-        else
-            return true; // still connected, to same host and port.
+        traceprint("open_ssl: net_connect(%s, %u) returned %d\n", host, port, err);
+        return false;
     }
-
+#else
     sockaddr_in addr;
-
-    if(host)
-        _host = host;
-    else
-        host = _host.c_str();
-
-    if(port)
-        _lastport = port;
-    else
-    {
-        port = _lastport;
-        if(!port)
-            return false;
-    }
-
     if(!_Resolve(host, port, &addr))
     {
         traceprint("RESOLV ERROR: %s\n", _GetErrorStr(_GetError()).c_str());
@@ -287,22 +375,222 @@ bool TcpSocket::open(const char *host /* = NULL */, unsigned int port /* = 0 */)
         traceprint("CONNECT ERROR: %s\n", _GetErrorStr(_GetError()).c_str());
         return false;
     }
+#endif
 
-    _SetNonBlocking(s, _nonblocking); // restore setting if it was set in invalid state. static call because _s is intentionally still invalid here.
-    _s = s; // set the socket handle when we are really sure we are connected, and things are set up
+    *ps = s;
+    return true;
+}
+
+#ifdef MINIHTTP_USE_POLARSSL
+void traceprint_ssl(void *ctx, int level, const char *str )
+{
+    (void)ctx;
+    printf("ssl: [%d] %s\n", level, str);
+}
+static bool _openSSL(void *ps, SSLCtx *ctx)
+{
+    ssl_set_endpoint(&ctx->ssl, SSL_IS_CLIENT);
+    ssl_set_authmode(&ctx->ssl, SSL_VERIFY_OPTIONAL);
+    ssl_set_ca_chain(&ctx->ssl, &ctx->cacert, NULL, NULL);
+
+    /* SSLv3 is deprecated, set minimum to TLS 1.0 */
+    ssl_set_min_version(&ctx->ssl, SSL_MAJOR_VERSION_3, SSL_MINOR_VERSION_1);
+    /* RC4 is deprecated, disable it */
+    ssl_set_arc4_support(&ctx->ssl, SSL_ARC4_DISABLED );
+
+    ssl_set_rng(&ctx->ssl, ctr_drbg_random, &ctx->ctr_drbg);
+    ssl_set_dbg(&ctx->ssl, traceprint_ssl, NULL);
+    //ssl_set_ciphersuites( &ctx->ssl, ssl_default_ciphersuites); // FIXME
+    ssl_set_bio(&ctx->ssl, net_recv, ps, net_send, ps);
+
+    int err;
+    while( (err = ssl_handshake(&ctx->ssl)) )
+    {
+        if(err != POLARSSL_ERR_NET_WANT_READ && err != POLARSSL_ERR_NET_WANT_WRITE)
+        {
+            traceprint("open_ssl: ssl_handshake returned -0x%x\n\n", -err);
+            return false;
+        }
+    }
+
+    return true;
+}
+#endif
+
+bool TcpSocket::open(const char *host /* = NULL */, unsigned int port /* = 0 */)
+{
+    if(isOpen())
+    {
+        if( (host && host != _host) || (port && port != _lastport) )
+            close();
+            // ... and continue connecting to new host/port
+        else
+            return true; // still connected, to same host and port.
+    }
+
+    if(host)
+        _host = host;
+    else
+        host = _host.c_str();
+
+    if(port)
+        _lastport = port;
+    else
+    {
+        port = _lastport;
+        if(!port)
+            return false;
+    }
+
+
+    assert(!SOCKETVALID(_s));
+
+    {
+        SOCKET s;
+        if(!_openSocket(&s, host, port))
+            return false;
+        _s = s;
+    }
+
+    _SetNonBlocking(_s, _nonblocking); // restore setting if it was set in invalid state. static call because _s is intentionally still invalid here.
+
+#ifdef MINIHTTP_USE_POLARSSL
+    if(_sslctx)
+        if(!_openSSL(&_s, (SSLCtx*)_sslctx))
+        {
+            close();
+            return false;
+        }
+#endif
 
     _OnOpen();
 
     return true;
 }
 
-bool TcpSocket::SendBytes(const char *str, unsigned int len)
+#ifdef MINIHTTP_USE_POLARSSL
+void TcpSocket::shutdownSSL()
+{
+    delete ((SSLCtx*)_sslctx);
+    _sslctx = NULL;
+}
+
+bool TcpSocket::initSSL(const char *certs)
+{
+    SSLCtx *ctx = (SSLCtx*)_sslctx;
+    if(ctx)
+        ctx->reset();
+    else
+    {
+        ctx = new SSLCtx();
+        _sslctx = ctx;
+        if(!ctx->init())
+        {
+            shutdownSSL();
+            return false;
+        }
+    }
+    
+    if(certs)
+    {
+        int err = x509_crt_parse(&ctx->cacert, (const unsigned char*)certs, strlen(certs));
+        if(err)
+        {
+            shutdownSSL();
+            traceprint("x509_crt_parse() returned %d\n", err);
+            return false;
+        }
+    }
+
+    return true;
+}
+
+SSLResult TcpSocket::verifySSL()
+{
+    if(!_sslctx)
+        return SSLR_NO_SSL;
+
+    SSLCtx *ctx = (SSLCtx*)_sslctx;
+    unsigned r = SSLR_OK;
+    int res = ssl_get_verify_result(&ctx->ssl);
+    if(res)
+    {
+        if(res & BADCERT_EXPIRED)
+            r |= SSLR_CERT_EXPIRED;
+
+        if(res & BADCERT_REVOKED)
+            r |= SSLR_CERT_REVOKED;
+
+        if(res & BADCERT_CN_MISMATCH)
+            r |= SSLR_CERT_CN_MISMATCH;
+
+        if(res & BADCERT_NOT_TRUSTED)
+            r |= SSLR_CERT_NOT_TRUSTED;
+
+        if(res & BADCERT_MISSING)
+            r |= SSLR_CERT_MISSING;
+
+        if(res & BADCERT_SKIP_VERIFY)
+            r |= SSLR_CERT_SKIP_VERIFY;
+
+        if(res & BADCERT_FUTURE)
+            r |= SSLR_CERT_FUTURE;
+
+        // More than just this?
+        if(res != BADCERT_SKIP_VERIFY)
+            r |= SSLR_FAIL;
+    }
+
+    return (SSLResult)r;
+}
+#else // MINIHTTP_USE_POLARSSL
+void TcpSocket::shutdownSSL() {}
+bool TcpSocket::initSSL(const char *certs) { return false; }
+SSLResult TcpSocket::verifySSL() { return SSLR_NO_SSL; }
+#endif
+
+bool TcpSocket::SendBytes(const void *str, unsigned int len)
 {
     if(!SOCKETVALID(_s))
         return false;
     //traceprint("SEND: '%s'\n", str);
-    return ::send(_s, str, len, 0) >= 0;
-    // TODO: check _GetError()
+
+    unsigned written = 0;
+    while(true) // FIXME: buffer bytes to an internal queue instead?
+    {
+        int ret = _writeBytes((const unsigned char*)str + written, len - written);
+        if(ret >= 0)
+        {
+            assert((unsigned)ret <= len);
+            written += (unsigned)ret;
+            if(written >= len)
+                break;
+        }
+        else
+        {
+#ifdef MINIHTTP_USE_POLARSSL
+            if(ret == POLARSSL_ERR_NET_WANT_WRITE) // FIXME: wait? queue? try later?
+                continue;
+#endif
+            traceprint("SendBytes: error %d\n", ret);
+            return false;
+        }
+    }
+
+    assert(written == len);
+    return true;
+}
+
+int TcpSocket::_writeBytes(const unsigned char *buf, size_t len)
+{
+#ifdef MINIHTTP_USE_POLARSSL
+    if(_sslctx)
+        return ssl_write(&((SSLCtx*)_sslctx)->ssl, buf, len);
+    else
+        return net_send(&_s, buf, len);
+#else
+    return ::send(_s, buf, len, 0);
+#endif
 }
 
 void TcpSocket::_ShiftBuffer(void)
@@ -319,6 +607,18 @@ void TcpSocket::_OnData()
     _OnRecv(_readptr, _recvSize);
 }
 
+int TcpSocket::_readBytes(unsigned char *buf, size_t maxlen)
+{
+#ifdef MINIHTTP_USE_POLARSSL
+    if(_sslctx)
+        return ssl_read(&((SSLCtx*)_sslctx)->ssl, buf, maxlen);
+    else
+        return net_recv(&_s, buf, maxlen);
+#else
+    return recv(_s, buf, maxlen, 0); // last char is used as string terminator
+#endif
+}
+
 bool TcpSocket::update(void)
 {
    if(!_OnUpdate())
@@ -330,8 +630,7 @@ bool TcpSocket::update(void)
     if(!_inbuf)
         SetBufsizeIn(DEFAULT_BUFSIZE);
 
-    int bytes = recv(_s, _writeptr, _writeSize, 0); // last char is used as string terminator
-
+    int bytes = _readBytes((unsigned char*)_writeptr, _writeSize);
     if(bytes > 0) // we received something
     {
         _inbuf[bytes] = 0;
@@ -342,19 +641,25 @@ bool TcpSocket::update(void)
         _readptr = _writeptr = _inbuf;
 
         _OnData();
-        return true;
     }
     else if(bytes == 0) // remote has closed the connection
     {
         _recvSize = 0;
         close();
-        return true;
     }
     else // whoops, error?
     {
         int e = _GetError();
         switch(e)
         {
+        case EWOULDBLOCK:
+#if defined(EAGAIN) && (EWOULDBLOCK != EAGAIN)
+        case EAGAIN: // linux man pages say this can also happen instead of EWOULDBLOCK
+#endif
+            return false;
+
+        default:
+            traceprint("SOCKET UPDATE ERROR: (%d): %s\n", e, _GetErrorStr(e).c_str());
         case ECONNRESET:
         case ENOTCONN:
         case ETIMEDOUT:
@@ -362,16 +667,12 @@ bool TcpSocket::update(void)
         case WSAECONNABORTED:
         case WSAESHUTDOWN:
 #endif
+#ifdef MINIHTTP_USE_POLARSSL
+        case 0: // no error from the network API, but notification that the SSL connection was terminated
+#endif
             close();
             break;
-
-        case EWOULDBLOCK:
-#if defined(EAGAIN) && (EWOULDBLOCK != EAGAIN)
-        case EAGAIN: // linux man pages say this can also happen instead of EWOULDBLOCK
-#endif
-            return false;
         }
-        traceprint("SOCKET UPDATE ERROR: (%d): %s\n", e, _GetErrorStr(e).c_str());
     }
     return true;
 }
@@ -429,9 +730,9 @@ bool HttpSocket::Download(const std::string& url, void *user /* = NULL */)
 {
     Request req;
     req.user = user;
-    SplitURI(url, req.host, req.resource, req.port);
+    SplitURI(url, req.host, req.resource, req.port, req.useSSL);
     if(req.port < 0)
-        req.port = 80;
+        req.port = req.useSSL ? 443 : 80;
     return SendGet(req, false);
 }
 
@@ -511,6 +812,11 @@ bool HttpSocket::_OpenRequest(const Request& req)
     {
         traceprint("HttpSocket::_OpenRequest(): _inProgress == true, should not be called.");
         return false;
+    }
+    if(req.useSSL && !hasSSL())
+    {
+        traceprint("HttpSocket::_OpenRequest(): Is an SSL connection, but SSL was not inited, doing that now\n");
+        initSSL(NULL); // FIXME: supply cert list?
     }
     if(!open(req.host.c_str(), req.port))
         return false;
@@ -672,16 +978,16 @@ bool HttpSocket::_HandleStatus()
 
 bool HttpSocket::IsRedirecting() const
 {
-	switch(_status)
-	{
-		case 301:
-		case 302:
-		case 303:
-		case 307:
-		case 308:
-			return true;
-	}
-	return false;
+    switch(_status)
+    {
+        case 301:
+        case 302:
+        case 303:
+        case 307:
+        case 308:
+            return true;
+    }
+    return false;
 }
 
 
@@ -769,7 +1075,7 @@ void HttpSocket::_OnClose()
         _FinishRequest();
 }
 
-void HttpSocket::_OnRecvInternal(char *buf, unsigned int size)
+void HttpSocket::_OnRecvInternal(void *buf, unsigned int size)
 {
     if(_status == 200 || _alwaysHandle)
         _OnRecv(buf, size);

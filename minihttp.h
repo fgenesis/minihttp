@@ -22,9 +22,25 @@ namespace minihttp
 
 bool InitNetwork();
 void StopNetwork();
+bool HasSSL();
 
 bool SplitURI(const std::string& uri, std::string& host, std::string& file, int& port);
 
+enum SSLResult
+{
+    SSLR_OK = 0x0,
+    SSLR_NO_SSL = 0x1,
+    SSLR_FAIL = 0x2,
+    SSLR_CERT_EXPIRED = 0x4,
+    SSLR_CERT_REVOKED = 0x8,
+    SSLR_CERT_CN_MISMATCH = 0x10,
+    SSLR_CERT_NOT_TRUSTED = 0x20,
+    SSLR_CERT_MISSING = 0x40,
+    SSLR_CERT_SKIP_VERIFY = 0x80,
+    SSLR_CERT_FUTURE = 0x100,
+
+    _SSLR_FORCE32BIT = 0x7fffffff
+};
 
 class TcpSocket
 {
@@ -44,13 +60,19 @@ public:
     bool SetNonBlocking(bool nonblock);
     unsigned int GetBufSize() { return _inbufSize; }
     const char *GetHost(void) { return _host.c_str(); }
-    bool SendBytes(const char *str, unsigned int len);
+    bool SendBytes(const void *buf, unsigned int len);
+
+    // SSL related
+    bool initSSL(const char *certs);
+    bool hasSSL() const { return !!_sslctx; }
+    void shutdownSSL();
+    SSLResult verifySSL();
 
 protected:
     virtual void _OnCloseInternal();
     virtual void _OnData(); // data received callback. Internal, should only be overloaded to call _OnRecv()
 
-    virtual void _OnRecv(char *buf, unsigned int size) = 0;
+    virtual void _OnRecv(void *buf, unsigned int size) = 0;
     virtual void _OnClose() {}; // close callback
     virtual void _OnOpen() {} // called when opened
     virtual bool _OnUpdate() { return true; } // called before reading from the socket
@@ -72,6 +94,11 @@ protected:
     intptr_t _s; // socket handle. really an int, but to be sure its 64 bit compatible as it seems required on windows, we use this.
 
     std::string _host;
+
+private:
+    int _writeBytes(const unsigned char *buf, size_t len);
+    int _readBytes(unsigned char *buf, size_t maxlen);
+    void *_sslctx;
 };
 
 } // end namespace minihttp
@@ -97,13 +124,14 @@ struct Request
 {
     Request() : port(80), user(NULL) {}
     Request(const std::string& h, const std::string& res, int p = 80, void *u = NULL)
-        : host(h), resource(res), port(80), user(u) {}
+        : host(h), resource(res), port(80), user(u), useSSL(false) {}
 
     std::string host;
     std::string header; // set by socket
     std::string resource;
     int port;
     void *user;
+    bool useSSL;
 };
 
 class HttpSocket : public TcpSocket
@@ -145,7 +173,7 @@ protected:
     virtual void _OnCloseInternal();
     virtual void _OnClose();
     virtual void _OnData(); // data received callback. Internal, should only be overloaded to call _OnRecv()
-    virtual void _OnRecv(char *buf, unsigned int size) = 0;
+    virtual void _OnRecv(void *buf, unsigned int size) = 0;
     virtual void _OnOpen(); // called when opene
     virtual bool _OnUpdate(); // called before reading from the socket
 
@@ -160,7 +188,7 @@ protected:
     void _ParseHeaderFields(const char *s, size_t size);
     bool _HandleStatus(); // Returns whether the processed request was successful, or not
     void _FinishRequest();
-    void _OnRecvInternal(char *buf, unsigned int size);
+    void _OnRecvInternal(void *buf, unsigned int size);
 
     std::string _user_agent;
     std::string _accept_encoding; // Default empty.
