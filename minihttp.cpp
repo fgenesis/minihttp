@@ -726,25 +726,31 @@ bool HttpSocket::_OnUpdate()
     return true;
 }
 
-bool HttpSocket::Download(const std::string& url, void *user /* = NULL */)
+bool HttpSocket::Download(const std::string& url,  const char *extraRequest /*= NULL*/, void *user /* = NULL */)
 {
     Request req;
     req.user = user;
     SplitURI(url, req.host, req.resource, req.port, req.useSSL);
     if(req.port < 0)
         req.port = req.useSSL ? 443 : 80;
+    if(extraRequest)
+        req.extraGetHeaders = extraRequest;
     return SendGet(req, false);
 }
 
-bool HttpSocket::SendGet(const std::string what, void *user /* = NULL */)
+bool HttpSocket::SendGet(const std::string what, const char *extraRequest /*= NULL*/, void *user /* = NULL */)
 {
     Request req(what, _host, _lastport, user);
+    if(extraRequest)
+        req.extraGetHeaders = extraRequest;
     return SendGet(req, false);
 }
 
-bool HttpSocket::QueueGet(const std::string what, void *user /* = NULL */)
+bool HttpSocket::QueueGet(const std::string what, const char *extraRequest /*= NULL*/, void *user /* = NULL */)
 {
     Request req(what, _host, _lastport, user);
+    if(extraRequest)
+        req.extraGetHeaders = extraRequest;
     return SendGet(req, true);
 }
 
@@ -770,6 +776,13 @@ bool HttpSocket::SendGet(Request& req, bool enqueue)
 
     if(_accept_encoding.length())
         r << "Accept-Encoding: " << _accept_encoding << crlf;
+
+    if(req.extraGetHeaders.length())
+    {
+        r << req.extraGetHeaders;
+        if(req.extraGetHeaders.compare(req.extraGetHeaders.length() - 2, std::string::npos, crlf))
+            r << crlf;
+    }
 
     r << crlf; // header terminator
 
@@ -967,7 +980,7 @@ bool HttpSocket::_HandleStatus()
                 if(const char *loc = Hdr("location"))
                 {
                     traceprint("Following HTTP redirect to: %s\n", loc);
-                    Download(loc, _curRequest.user);
+                    Download(loc, _curRequest.extraGetHeaders.c_str(), _curRequest.user);
                 }
             return false;
 

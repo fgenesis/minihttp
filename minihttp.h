@@ -129,6 +129,7 @@ struct Request
     std::string host;
     std::string header; // set by socket
     std::string resource;
+    std::string extraGetHeaders;
     int port;
     void *user;
     bool useSSL;
@@ -152,10 +153,10 @@ public:
     void SetFollowRedirect(bool follow) { _followRedir = follow; }
     void SetAlwaysHandle(bool h) { _alwaysHandle = h; }
 
-    bool Download(const std::string& url, void *user = NULL);
+    bool Download(const std::string& url, const char *extraRequest = NULL, void *user = NULL);
     bool SendGet(Request& what, bool enqueue);
-    bool SendGet(const std::string what, void *user = NULL);
-    bool QueueGet(const std::string what, void *user = NULL);
+    bool SendGet(const std::string what, const char *extraRequest = NULL, void *user = NULL);
+    bool QueueGet(const std::string what, const char *extraRequest = NULL, void *user = NULL);
 
     unsigned int GetRemaining() const { return _remaining; }
 
