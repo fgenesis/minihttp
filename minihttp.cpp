@@ -680,7 +680,8 @@ bool TcpSocket::update(void)
     }
     else // whoops, error?
     {
-        switch(bytes)
+        int err = _GetError();
+        switch(err)
         {
         case EWOULDBLOCK:
 #if defined(EAGAIN) && (EWOULDBLOCK != EAGAIN)
@@ -694,7 +695,7 @@ bool TcpSocket::update(void)
 #endif
 
         default:
-            traceprint("SOCKET UPDATE ERROR: (%d): %s\n", bytes, _GetErrorStr(bytes).c_str());
+            traceprint("SOCKET UPDATE ERROR: (%d): %s\n", err, _GetErrorStr(err).c_str());
         case ECONNRESET:
         case ENOTCONN:
         case ETIMEDOUT:
