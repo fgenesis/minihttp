@@ -26,6 +26,7 @@
 #  include <unistd.h>
 #  include <fcntl.h>
 #  include <sys/socket.h>
+#  include <netinet/in.h>
 #  include <netdb.h>
 #  define SOCKET_ERROR (-1)
 #  define INVALID_SOCKET (SOCKET)(~0)
@@ -43,6 +44,7 @@
 #include "minihttp.h"
 
 #define SOCKETVALID(s) ((s) != INVALID_SOCKET)
+
 
 #ifdef _MSC_VER
 #  define STRNICMP _strnicmp
@@ -282,6 +284,14 @@ bool TcpSocket::open(const char *host /* = NULL */, unsigned int port /* = 0 */)
         return false;
     }
 
+#ifdef SO_NOSIGPIPE
+    // Don't fire SIGPIPE when trying to write to a closed socket
+    {
+        int set = 1;
+        setsockopt(s, SOL_SOCKET, SO_NOSIGPIPE, (void *)&set, sizeof(int));
+    }
+#endif
+
     if (::connect(s, (sockaddr*)&addr, sizeof(sockaddr)))
     {
         traceprint("CONNECT ERROR: %s\n", _GetErrorStr(_GetError()).c_str());
@@ -301,7 +311,11 @@ bool TcpSocket::SendBytes(const char *str, unsigned int len)
     if(!SOCKETVALID(_s))
         return false;
     //traceprint("SEND: '%s'\n", str);
-    return ::send(_s, str, len, 0) >= 0;
+    int flags = 0;
+#ifdef MSG_NOSIGNAL
+    flags |= MSG_NOSIGNAL;
+#endif
+    return ::send(_s, str, len, flags) >= 0;
     // TODO: check _GetError()
 }
 
