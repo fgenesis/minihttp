@@ -26,6 +26,7 @@
 #  include <unistd.h>
 #  include <fcntl.h>
 #  include <sys/socket.h>
+#  include <netinet/in.h>
 #  include <netdb.h>
 #  define SOCKET_ERROR (-1)
 #  define INVALID_SOCKET (SOCKET)(~0)
@@ -51,6 +52,7 @@
 #include "minihttp.h"
 
 #define SOCKETVALID(s) ((s) != INVALID_SOCKET)
+
 
 #ifdef _MSC_VER
 #  define STRNICMP _strnicmp
@@ -450,6 +452,15 @@ bool TcpSocket::open(const char *host /* = NULL */, unsigned int port /* = 0 */)
         if(!_openSocket(&s, host, port))
             return false;
         _s = s;
+
+#ifdef SO_NOSIGPIPE
+        // Don't fire SIGPIPE when trying to write to a closed socket
+        {
+            int set = 1;
+            setsockopt(s, SOL_SOCKET, SO_NOSIGPIPE, (void *)&set, sizeof(int));
+        }
+#endif
+
     }
 
     _SetNonBlocking(_s, _nonblocking); // restore setting if it was set in invalid state. static call because _s is intentionally still invalid here.
@@ -490,7 +501,7 @@ bool TcpSocket::initSSL(const char *certs)
             return false;
         }
     }
-    
+
     if(certs)
     {
         int err = x509_crt_parse(&ctx->cacert, (const unsigned char*)certs, strlen(certs));
@@ -551,6 +562,8 @@ SSLResult TcpSocket::verifySSL() { return SSLR_NO_SSL; }
 
 bool TcpSocket::SendBytes(const void *str, unsigned int len)
 {
+    if(!len)
+        return true;
     if(!SOCKETVALID(_s))
         return false;
     //traceprint("SEND: '%s'\n", str);
@@ -559,22 +572,20 @@ bool TcpSocket::SendBytes(const void *str, unsigned int len)
     while(true) // FIXME: buffer bytes to an internal queue instead?
     {
         int ret = _writeBytes((const unsigned char*)str + written, len - written);
-        if(ret >= 0)
+        if(ret > 0)
         {
             assert((unsigned)ret <= len);
             written += (unsigned)ret;
             if(written >= len)
                 break;
         }
-        else
+        else if(ret < 0)
         {
-#ifdef MINIHTTP_USE_POLARSSL
-            if(ret == POLARSSL_ERR_NET_WANT_WRITE) // FIXME: wait? queue? try later?
-                continue;
-#endif
-            traceprint("SendBytes: error %d\n", ret);
+            traceprint("SendBytes: error %d, closing socket\n", ret);
+            close();
             return false;
         }
+        // and if ret == 0, keep trying.
     }
 
     assert(written == len);
@@ -583,14 +594,31 @@ bool TcpSocket::SendBytes(const void *str, unsigned int len)
 
 int TcpSocket::_writeBytes(const unsigned char *buf, size_t len)
 {
+    int ret = 0;
+
 #ifdef MINIHTTP_USE_POLARSSL
+    int err;
     if(_sslctx)
-        return ssl_write(&((SSLCtx*)_sslctx)->ssl, buf, len);
+        err = ssl_write(&((SSLCtx*)_sslctx)->ssl, buf, len);
     else
-        return net_send(&_s, buf, len);
+        err = net_send(&_s, buf, len);
+
+    switch(err)
+    {
+        case POLARSSL_ERR_NET_WANT_WRITE:
+            ret = 0; // FIXME: Nothing written, try later?
+        default:
+            ret = err;
+    }
 #else
-    return ::send(_s, buf, len, 0);
+    int flags = 0;
+    #ifdef MSG_NOSIGNAL
+       flags |= MSG_NOSIGNAL;
+    #endif
+    ret = ::send(_s, buf, len, flags);
 #endif
+
+    return ret;
 }
 
 void TcpSocket::_ShiftBuffer(void)

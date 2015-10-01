@@ -3,6 +3,7 @@
 
 #include <stdio.h>
 #include <stdlib.h>
+#include <signal.h>
 
 #include "minihttp.h"
 
@@ -44,6 +45,11 @@ protected:
 
 int main(int argc, char *argv[])
 {
+#ifdef SIGPIPE
+    // On *NIX systems, don't signal writing to a closed socket.
+    signal(SIGPIPE, SIG_IGN);
+#endif
+
     minihttp::InitNetwork();
     HttpDumpSocket *ht = new HttpDumpSocket;
 
