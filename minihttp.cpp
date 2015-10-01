@@ -307,6 +307,8 @@ void TcpSocket::close(void)
     if(!SOCKETVALID(_s))
         return;
 
+    traceprint("TcpSocket::close\n");
+
     _OnCloseInternal();
 
 #ifdef MINIHTTP_USE_POLARSSL
@@ -659,6 +661,7 @@ bool TcpSocket::update(void)
         SetBufsizeIn(DEFAULT_BUFSIZE);
 
     int bytes = _readBytes((unsigned char*)_writeptr, _writeSize);
+    traceprint("TcpSocket::update: _readBytes() result %d\n", bytes);
     if(bytes > 0) // we received something
     {
         _inbuf[bytes] = 0;
@@ -677,8 +680,7 @@ bool TcpSocket::update(void)
     }
     else // whoops, error?
     {
-        int e = _GetError();
-        switch(e)
+        switch(bytes)
         {
         case EWOULDBLOCK:
 #if defined(EAGAIN) && (EWOULDBLOCK != EAGAIN)
@@ -686,17 +688,19 @@ bool TcpSocket::update(void)
 #endif
             return false;
 
+#ifdef MINIHTTP_USE_POLARSSL
+        case POLARSSL_ERR_NET_WANT_READ:
+            break; // Try again later
+#endif
+
         default:
-            traceprint("SOCKET UPDATE ERROR: (%d): %s\n", e, _GetErrorStr(e).c_str());
+            traceprint("SOCKET UPDATE ERROR: (%d): %s\n", bytes, _GetErrorStr(bytes).c_str());
         case ECONNRESET:
         case ENOTCONN:
         case ETIMEDOUT:
 #ifdef _WIN32
         case WSAECONNABORTED:
         case WSAESHUTDOWN:
-#endif
-#ifdef MINIHTTP_USE_POLARSSL
-        case 0: // no error from the network API, but notification that the SSL connection was terminated
 #endif
             close();
             break;
@@ -731,6 +735,7 @@ void HttpSocket::_OnOpen()
 {
     TcpSocket::_OnOpen();
     _chunkedTransfer = false;
+    _mustClose = true;
 }
 
 void HttpSocket::_OnCloseInternal()
@@ -747,6 +752,8 @@ bool HttpSocket::_OnUpdate()
     if(_inProgress && !_chunkedTransfer && !_remaining && _status)
         _FinishRequest();
 
+    traceprint("HttpSocket::_OnUpdate, Q = %d\n", (unsigned)_requestQ.size());
+
     // initiate transfer if queue is not empty, but the socket somehow forgot to proceed
     if(_requestQ.size() && !_remaining && !_chunkedTransfer && !_inProgress)
         _DequeueMore();
@@ -759,6 +766,8 @@ bool HttpSocket::Download(const std::string& url,  const char *extraRequest /*= 
     Request req;
     req.user = user;
     SplitURI(url, req.host, req.resource, req.port, req.useSSL);
+    if(req.host.empty()) // if we're following a redirection to the same host, the server is likely to omit its hostname
+        req.host = _curRequest.host;
     if(req.port < 0)
         req.port = req.useSSL ? 443 : 80;
     if(extraRequest)
@@ -821,22 +830,26 @@ bool HttpSocket::SendGet(Request& req, bool enqueue)
 
 bool HttpSocket::_EnqueueOrSend(const Request& req, bool forceQueue /* = false */)
 {
+    traceprint("HttpSocket::_EnqueueOrSend, forceQueue = %d\n", forceQueue);
     if(_inProgress || forceQueue) // do not send while receiving other data
     {
-        traceprint("HTTP: Transfer pending; putting into queue. Now %u waiting.\n", (unsigned int)_requestQ.size()); // DEBUG
+        traceprint("HTTP: Transfer pending; putting into queue. Now %u waiting.\n", (unsigned int)_requestQ.size());
         _requestQ.push(req);
         return true;
     }
     // ok, we can send directly
+    traceprint("HTTP: Open request for immediate send.\n");
     if(!_OpenRequest(req))
         return false;
-    _inProgress = SendBytes(req.header.c_str(), req.header.length());
-    return _inProgress;
+    bool sent = SendBytes(req.header.c_str(), req.header.length());
+    _inProgress = sent;
+    return sent;
 }
 
 // called whenever a request is finished completely and the socket checks for more things to send
 void HttpSocket::_DequeueMore(void)
 {
+    traceprint("HttpSocket::_DequeueMore, Q = %u\n", (unsigned)_requestQ.size());
     _FinishRequest(); // In case this was not done yet.
 
     // _inProgress is known to be false here
@@ -869,12 +882,16 @@ bool HttpSocket::_OpenRequest(const Request& req)
 
 void HttpSocket::_FinishRequest(void)
 {
+    traceprint("HttpSocket::_FinishRequest\n");
     if(_inProgress)
     {
+        traceprint("... in progress. redirecting = %d\n", IsRedirecting());
         if(!IsRedirecting() || _alwaysHandle)
             _OnRequestDone(); // notify about finished request
         _inProgress = false;
         _hdrs.clear();
+        if(_mustClose)
+            close();
     }
 }
 
@@ -993,6 +1010,8 @@ bool HttpSocket::_HandleStatus()
 
     if(!(_chunkedTransfer || _contentLen) && _status == 200)
         traceprint("_ParseHeader: Not chunked transfer and content-length==0, this will go fail");
+
+    traceprint("Got HTTP Status %d\n", _status);
 
     switch(_status)
     {
@@ -1152,6 +1171,7 @@ bool SocketSet::update(void)
         interesting = sock->update() || interesting;
         if(sdata.deleteWhenDone && !sock->isOpen() && !sock->HasPendingTask())
         {
+            traceprint("Delete socket\n");
             delete sock;
             _store.erase(it++);
         }
