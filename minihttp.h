@@ -25,6 +25,9 @@ bool HasSSL();
 
 bool SplitURI(const std::string& uri, std::string& host, std::string& file, int& port);
 
+// append to enc
+void URLEncode(const std::string& s, std::string& enc);
+
 enum SSLResult
 {
     SSLR_OK = 0x0,

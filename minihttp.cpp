@@ -258,6 +258,29 @@ bool SplitURI(const std::string& uri, std::string& host, std::string& file, int&
     return true;
 }
 
+void URLEncode(const std::string& s, std::string& enc)
+{
+    const size_t len = s.length();
+    enc.reserve(enc.length() + len * 3);
+    char buf[3];
+    buf[0] = '%';
+    for(size_t i = 0; i < len; i++)
+    {
+        const unsigned char c = s[i];
+        // from  https://www.ietf.org/rfc/rfc1738.txt, page 3
+        if(isalnum(c) || c == '$' || c == '-' || c == '_' || c == '.' || c == '+' || c == '!' || c == '*' || c == '\'' || c == '(' || c == ')')
+            enc += (char)c;
+        else
+        {
+            unsigned nib = (c >> 4) & 0xf;
+            buf[1] = nib < 10 ? '0' + nib : 'a' + (nib-10);
+            nib = c & 0xf;
+            buf[2] = nib < 10 ? '0' + nib : 'a' + (nib-10);
+            enc.append(&buf[0], 3);
+        }
+    }
+}
+
 static bool _SetNonBlocking(SOCKET s, bool nonblock)
 {
     if(!SOCKETVALID(s))
