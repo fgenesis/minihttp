@@ -7,13 +7,12 @@
 #ifndef MINIHTTPSOCKET_H
 #define MINIHTTPSOCKET_H
 
-
 // ---- Compile config -----
 #define MINIHTTP_SUPPORT_HTTP
 #define MINIHTTP_SUPPORT_SOCKET_SET
 // -------------------------
 
-
+// Intentionally avoid pulling in any other headers
 
 #include <string>
 
@@ -91,7 +90,11 @@ protected:
 
     bool _nonblocking; // Default true. If false, the current thread is blocked while waiting for input.
 
+#ifdef _WIN32
     intptr_t _s; // socket handle. really an int, but to be sure its 64 bit compatible as it seems required on windows, we use this.
+#else
+    long _s;
+#endif
 
     std::string _host;
 
