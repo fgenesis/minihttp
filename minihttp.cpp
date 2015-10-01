@@ -664,7 +664,7 @@ bool TcpSocket::update(void)
         SetBufsizeIn(DEFAULT_BUFSIZE);
 
     int bytes = _readBytes((unsigned char*)_writeptr, _writeSize);
-    traceprint("TcpSocket::update: _readBytes() result %d\n", bytes);
+    //traceprint("TcpSocket::update: _readBytes() result %d\n", bytes);
     if(bytes > 0) // we received something
     {
         _inbuf[bytes] = 0;
@@ -755,7 +755,7 @@ bool HttpSocket::_OnUpdate()
     if(_inProgress && !_chunkedTransfer && !_remaining && _status)
         _FinishRequest();
 
-    traceprint("HttpSocket::_OnUpdate, Q = %d\n", (unsigned)_requestQ.size());
+    //traceprint("HttpSocket::_OnUpdate, Q = %d\n", (unsigned)_requestQ.size());
 
     // initiate transfer if queue is not empty, but the socket somehow forgot to proceed
     if(_requestQ.size() && !_remaining && !_chunkedTransfer && !_inProgress)
