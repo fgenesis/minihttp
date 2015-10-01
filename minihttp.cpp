@@ -769,7 +769,7 @@ bool HttpSocket::Download(const std::string& url,  const char *extraRequest /*= 
     Request req;
     req.user = user;
     SplitURI(url, req.host, req.resource, req.port, req.useSSL);
-    if(req.host.empty()) // if we're following a redirection to the same host, the server is likely to omit its hostname
+    if(IsRedirecting() && req.host.empty()) // if we're following a redirection to the same host, the server is likely to omit its hostname
         req.host = _curRequest.host;
     if(req.port < 0)
         req.port = req.useSSL ? 443 : 80;
