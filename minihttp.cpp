@@ -399,8 +399,12 @@ static bool _openSSL(void *ps, SSLCtx *ctx)
 
     /* SSLv3 is deprecated, set minimum to TLS 1.0 */
     ssl_set_min_version(&ctx->ssl, SSL_MAJOR_VERSION_3, SSL_MINOR_VERSION_1);
+
+    // The following is removed from newer polarssl versions
+#ifdef SSL_ARC4_DISABLED
     /* RC4 is deprecated, disable it */
     ssl_set_arc4_support(&ctx->ssl, SSL_ARC4_DISABLED );
+#endif
 
     ssl_set_rng(&ctx->ssl, ctr_drbg_random, &ctx->ctr_drbg);
     ssl_set_dbg(&ctx->ssl, traceprint_ssl, NULL);
