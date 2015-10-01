@@ -618,6 +618,8 @@ int TcpSocket::_writeBytes(const unsigned char *buf, size_t len)
        flags |= MSG_NOSIGNAL;
     #endif
     ret = ::send(_s, buf, len, flags);
+    if(ret == -1) // *nix just returns -1 and sets errno... in that case, return the actual error
+        ret = _GetError();
 #endif
 
     return ret;
@@ -645,7 +647,8 @@ int TcpSocket::_readBytes(unsigned char *buf, size_t maxlen)
     else
         return net_recv(&_s, buf, maxlen);
 #else
-    return recv(_s, buf, maxlen, 0); // last char is used as string terminator
+    int bytes = recv(_s, buf, maxlen, 0); // last char is used as string terminator
+    return bytes != -1 ? bytes : _GetError(); // *nix just returns -1 and sets errno... in that case, return the actual error
 #endif
 }
 
@@ -680,8 +683,7 @@ bool TcpSocket::update(void)
     }
     else // whoops, error?
     {
-        int err = _GetError();
-        switch(err)
+        switch(bytes)
         {
         case EWOULDBLOCK:
 #if defined(EAGAIN) && (EWOULDBLOCK != EAGAIN)
@@ -695,7 +697,7 @@ bool TcpSocket::update(void)
 #endif
 
         default:
-            traceprint("SOCKET UPDATE ERROR: (%d): %s\n", err, _GetErrorStr(err).c_str());
+            traceprint("SOCKET UPDATE ERROR: (%d): %s\n", bytes, _GetErrorStr(bytes).c_str());
         case ECONNRESET:
         case ENOTCONN:
         case ETIMEDOUT:
