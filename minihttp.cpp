@@ -261,7 +261,6 @@ bool SplitURI(const std::string& uri, std::string& host, std::string& file, int&
 void URLEncode(const std::string& s, std::string& enc)
 {
     const size_t len = s.length();
-    enc.reserve(enc.length() + len * 3);
     char buf[3];
     buf[0] = '%';
     for(size_t i = 0; i < len; i++)
@@ -270,6 +269,8 @@ void URLEncode(const std::string& s, std::string& enc)
         // from  https://www.ietf.org/rfc/rfc1738.txt, page 3
         if(isalnum(c) || c == '$' || c == '-' || c == '_' || c == '.' || c == '+' || c == '!' || c == '*' || c == '\'' || c == '(' || c == ')' || c == ',')
             enc += (char)c;
+        else if(c == ' ')
+            enc += '+';
         else
         {
             unsigned nib = (c >> 4) & 0xf;
@@ -750,6 +751,17 @@ static void strToLower(std::string& s)
     std::transform(s.begin(), s.end(), s.begin(), tolower);
 }
 
+POST& POST::add(const char *key, const char *value)
+{
+    if(!empty())
+        data += '&';
+    URLEncode(key, data);
+    data += '=';
+    URLEncode(value, data);
+    return *this;
+}
+
+
 HttpSocket::HttpSocket()
 : TcpSocket(),
 _keep_alive(0), _remaining(0), _chunkedTransfer(false), _mustClose(true), _inProgress(false),
@@ -791,10 +803,12 @@ bool HttpSocket::_OnUpdate()
     return true;
 }
 
-bool HttpSocket::Download(const std::string& url,  const char *extraRequest /*= NULL*/, void *user /* = NULL */)
+bool HttpSocket::Download(const std::string& url,  const char *extraRequest /*= NULL*/, void *user /* = NULL */, const POST *post /*= NULL*/)
 {
     Request req;
     req.user = user;
+    if(post)
+        req.post = *post;
     SplitURI(url, req.host, req.resource, req.port, req.useSSL);
     if(IsRedirecting() && req.host.empty()) // if we're following a redirection to the same host, the server is likely to omit its hostname
         req.host = _curRequest.host;
@@ -802,33 +816,35 @@ bool HttpSocket::Download(const std::string& url,  const char *extraRequest /*= 
         req.port = req.useSSL ? 443 : 80;
     if(extraRequest)
         req.extraGetHeaders = extraRequest;
-    return SendGet(req, false);
+    return SendRequest(req, false);
 }
 
-bool HttpSocket::SendGet(const std::string what, const char *extraRequest /*= NULL*/, void *user /* = NULL */)
+bool HttpSocket::SendRequest(const std::string what, const char *extraRequest /*= NULL*/, void *user /* = NULL */)
 {
     Request req(what, _host, _lastport, user);
     if(extraRequest)
         req.extraGetHeaders = extraRequest;
-    return SendGet(req, false);
+    return SendRequest(req, false);
 }
 
-bool HttpSocket::QueueGet(const std::string what, const char *extraRequest /*= NULL*/, void *user /* = NULL */)
+bool HttpSocket::QueueRequest(const std::string what, const char *extraRequest /*= NULL*/, void *user /* = NULL */)
 {
     Request req(what, _host, _lastport, user);
     if(extraRequest)
         req.extraGetHeaders = extraRequest;
-    return SendGet(req, true);
+    return SendRequest(req, true);
 }
 
-bool HttpSocket::SendGet(Request& req, bool enqueue)
+bool HttpSocket::SendRequest(Request& req, bool enqueue)
 {
     if(req.host.empty() || !req.port)
         return false;
 
+    const bool post = !req.post.empty();
+
     std::stringstream r;
     const char *crlf = "\r\n";
-    r << "GET " << req.resource << " HTTP/1.1" << crlf;
+    r << (post ? "POST " : "GET ") << req.resource << " HTTP/1.1" << crlf;
     r << "Host: " << req.host << crlf;
     if(_keep_alive)
     {
@@ -844,6 +860,12 @@ bool HttpSocket::SendGet(Request& req, bool enqueue)
     if(_accept_encoding.length())
         r << "Accept-Encoding: " << _accept_encoding << crlf;
 
+    if(post)
+    {
+        r << "Content-Length: " << req.post.length() << crlf;
+        r << "Content-Type: application/x-www-form-urlencoded" << crlf;
+    }
+
     if(req.extraGetHeaders.length())
     {
         r << req.extraGetHeaders;
@@ -852,6 +874,10 @@ bool HttpSocket::SendGet(Request& req, bool enqueue)
     }
 
     r << crlf; // header terminator
+
+    // FIXME: appending this to the 'header' field is probably not a good idea
+    if(post)
+        r << req.post.str();
 
     req.header = r.str();
 
@@ -1043,27 +1069,39 @@ bool HttpSocket::_HandleStatus()
 
     traceprint("Got HTTP Status %d\n", _status);
 
+    bool forceGET = false;
     switch(_status)
     {
         case 200:
             return true;
 
+        case 303:
+            forceGET = true; // As per spec, continue with a GET request Continue
         case 301:
         case 302:
-        case 303:
         case 307:
         case 308:
             if(_followRedir)
                 if(const char *loc = Hdr("location"))
                 {
                     traceprint("Following HTTP redirect to: %s\n", loc);
-                    Download(loc, _curRequest.extraGetHeaders.c_str(), _curRequest.user);
+                    _Redirect(loc, forceGET);
                 }
             return false;
 
         default:
             return false;
     }
+}
+
+bool HttpSocket::_Redirect(std::string loc, bool forceGET)
+{
+    if(loc.empty())
+        return false;
+    // treat non-full URLs as local paths (browsers do it the same way)
+    if(loc.size() && !strchr(loc.c_str(), ':') && loc[0] != '/')
+        loc = '/' + loc;
+    return Download(loc, _curRequest.extraGetHeaders.c_str(), _curRequest.user, forceGET ? NULL : &_curRequest.post);
 }
 
 bool HttpSocket::IsRedirecting() const

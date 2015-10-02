@@ -126,6 +126,19 @@ enum HttpCode
     HTTP_NOTFOUND = 404,
 };
 
+class POST
+{
+public:
+    void reserve(size_t res) { data.reserve(res); }
+    POST& add(const char *key, const char *value);
+    const char *c_str() const { return data.c_str(); }
+    const std::string& str() const { return data; }
+    bool empty() const { return data.empty(); }
+    size_t length() const { return data.length(); }
+private:
+    std::string data;
+};
+
 struct Request
 {
     Request() : port(80), user(NULL) {}
@@ -139,6 +152,7 @@ struct Request
     int port;
     void *user;
     bool useSSL;
+    POST post; // if this is empty, it's a GET request, otherwise a POST request
 };
 
 class HttpSocket : public TcpSocket
@@ -159,10 +173,10 @@ public:
     void SetFollowRedirect(bool follow) { _followRedir = follow; }
     void SetAlwaysHandle(bool h) { _alwaysHandle = h; }
 
-    bool Download(const std::string& url, const char *extraRequest = NULL, void *user = NULL);
-    bool SendGet(Request& what, bool enqueue);
-    bool SendGet(const std::string what, const char *extraRequest = NULL, void *user = NULL);
-    bool QueueGet(const std::string what, const char *extraRequest = NULL, void *user = NULL);
+    bool Download(const std::string& url, const char *extraRequest = NULL, void *user = NULL, const POST *post = NULL);
+    bool SendRequest(Request& what, bool enqueue);
+    bool SendRequest(const std::string what, const char *extraRequest = NULL, void *user = NULL);
+    bool QueueRequest(const std::string what, const char *extraRequest = NULL, void *user = NULL);
 
     unsigned int GetRemaining() const { return _remaining; }
 
@@ -186,6 +200,8 @@ protected:
 
     // new ones:
     virtual void _OnRequestDone() {}
+
+    bool _Redirect(std::string loc, bool forceGET);
 
     void _ProcessChunk();
     bool _EnqueueOrSend(const Request& req, bool forceQueue = false);
