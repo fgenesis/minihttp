@@ -1064,19 +1064,21 @@ bool HttpSocket::_HandleStatus()
     const char *conn = Hdr("connection"); // if its not keep-alive, server will close it, so we can too
     _mustClose = !conn || STRNICMP(conn, "keep-alive", 10);
 
-    if(!(_chunkedTransfer || _contentLen) && _status == 200)
+    const bool success = IsSuccess();
+
+    if(!(_chunkedTransfer || _contentLen) && success)
         traceprint("_ParseHeader: Not chunked transfer and content-length==0, this will go fail");
 
     traceprint("Got HTTP Status %d\n", _status);
 
+    if(success)
+        return true;
+
     bool forceGET = false;
     switch(_status)
     {
-        case 200:
-            return true;
-
         case 303:
-            forceGET = true; // As per spec, continue with a GET request Continue
+            forceGET = true; // As per spec, continue with a GET request
         case 301:
         case 302:
         case 307:
@@ -1117,6 +1119,13 @@ bool HttpSocket::IsRedirecting() const
     }
     return false;
 }
+
+bool HttpSocket::IsSuccess() const
+{
+    const unsigned s = _status;
+    return s >= 200 && s <= 205;
+}
+
 
 
 void HttpSocket::_ParseHeader(void)
@@ -1205,7 +1214,7 @@ void HttpSocket::_OnClose()
 
 void HttpSocket::_OnRecvInternal(void *buf, unsigned int size)
 {
-    if(_status == 200 || _alwaysHandle)
+    if(IsSuccess() || _alwaysHandle)
         _OnRecv(buf, size);
 }
 

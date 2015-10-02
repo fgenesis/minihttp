@@ -189,6 +189,7 @@ public:
     const char *Hdr(const char *h) const;
 
     bool IsRedirecting() const;
+    bool IsSuccess() const;
 
 protected:
     virtual void _OnCloseInternal();
