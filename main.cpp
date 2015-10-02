@@ -51,6 +51,8 @@ int main(int argc, char *argv[])
 #endif
 
     minihttp::InitNetwork();
+    atexit(minihttp::StopNetwork);
+
     HttpDumpSocket *ht = new HttpDumpSocket;
 
     ht->SetKeepAlive(3);

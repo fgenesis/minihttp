@@ -348,6 +348,7 @@ void TcpSocket::close(void)
 #endif
 
     _s = INVALID_SOCKET;
+    _recvSize = 0;
 }
 
 void TcpSocket::_OnCloseInternal()
@@ -476,6 +477,8 @@ bool TcpSocket::open(const char *host /* = NULL */, unsigned int port /* = 0 */)
 
 
     assert(!SOCKETVALID(_s));
+    
+    _recvSize = 0;
 
     {
         SOCKET s;
@@ -611,7 +614,8 @@ bool TcpSocket::SendBytes(const void *str, unsigned int len)
         }
         else if(ret < 0)
         {
-            traceprint("SendBytes: error %d, closing socket\n", ret);
+            int err = ret == -1 ? _GetError() : ret;
+            traceprint("SendBytes: error %d: %s\n", err, _GetErrorStr(err).c_str());
             close();
             return false;
         }
@@ -645,9 +649,7 @@ int TcpSocket::_writeBytes(const unsigned char *buf, size_t len)
     #ifdef MSG_NOSIGNAL
        flags |= MSG_NOSIGNAL;
     #endif
-    ret = ::send(_s, buf, len, flags);
-    if(ret == -1) // *nix just returns -1 and sets errno... in that case, return the actual error
-        ret = _GetError();
+    return ::send(_s, (const char*)buf, len, flags);
 #endif
 
     return ret;
@@ -675,8 +677,7 @@ int TcpSocket::_readBytes(unsigned char *buf, size_t maxlen)
     else
         return net_recv(&_s, buf, maxlen);
 #else
-    int bytes = recv(_s, buf, maxlen, 0); // last char is used as string terminator
-    return bytes != -1 ? bytes : _GetError(); // *nix just returns -1 and sets errno... in that case, return the actual error
+    return recv(_s, (char*)buf, maxlen, 0); // last char is used as string terminator
 #endif
 }
 
@@ -706,12 +707,14 @@ bool TcpSocket::update(void)
     }
     else if(bytes == 0) // remote has closed the connection
     {
-        _recvSize = 0;
         close();
     }
     else // whoops, error?
     {
-        switch(bytes)
+        // Possible that the error is returned directly (in that case, < -1, or -1 is returned and the error has to be retrieved seperately.
+        // But in the latter case, error numbers may be positive (at least on windows...)
+        int err = bytes == -1 ? _GetError() : bytes;
+        switch(err)
         {
         case EWOULDBLOCK:
 #if defined(EAGAIN) && (EWOULDBLOCK != EAGAIN)
@@ -725,7 +728,7 @@ bool TcpSocket::update(void)
 #endif
 
         default:
-            traceprint("SOCKET UPDATE ERROR: (%d): %s\n", bytes, _GetErrorStr(bytes).c_str());
+            traceprint("SOCKET UPDATE ERROR: (%d): %s\n", err, _GetErrorStr(err).c_str());
         case ECONNRESET:
         case ENOTCONN:
         case ETIMEDOUT:
