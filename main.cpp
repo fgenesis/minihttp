@@ -24,7 +24,7 @@ protected:
     {
         puts("_OnOpen()");
         minihttp::SSLResult sr = verifySSL();
-        printf("SSL status flags (0 is good): 0x%x\n", sr);
+        printf("SSL status flags: 0x%x (fail: %d)\n", sr, sr & minihttp::SSLR_FAIL);
         minihttp::HttpSocket::_OnOpen();
     }
 
@@ -45,6 +45,12 @@ protected:
 
 int main(int argc, char *argv[])
 {
+    if(argc != 2)
+    {
+        puts("URL plz!");
+        return 1;
+    }
+
 #ifdef SIGPIPE
     // On *NIX systems, don't signal writing to a closed socket.
     signal(SIGPIPE, SIG_IGN);
@@ -61,7 +67,8 @@ int main(int argc, char *argv[])
     //ht->Download("http://www.ietf.org/rfc/rfc2616.txt");
     //ht->Download("http://example.com"); // Queue another one
     //ht->Download("https://example.com"); // SSL connection
-    ht->Download("raw.githubusercontent.com/fgenesis/minihttp/master/minihttp.h"); // transparent HTTP -> HTTPS redirection
+    //ht->Download("raw.githubusercontent.com/fgenesis/minihttp/master/minihttp.h"); // transparent HTTP -> HTTPS redirection
+    ht->Download(argv[1]);
 
     minihttp::SocketSet ss;
 

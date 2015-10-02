@@ -145,6 +145,7 @@ struct Request
     Request(const std::string& h, const std::string& res, int p = 80, void *u = NULL)
         : host(h), resource(res), port(80), user(u), useSSL(false) {}
 
+    std::string protocol;
     std::string host;
     std::string header; // set by socket
     std::string resource;
