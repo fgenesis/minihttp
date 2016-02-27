@@ -68,7 +68,7 @@ public:
     bool initSSL(const char *certs);
     bool hasSSL() const { return !!_sslctx; }
     void shutdownSSL();
-    SSLResult verifySSL();
+    SSLResult verifySSL(char *buf = 0, unsigned buflen = 0); // optionally put info string into buf
 
 protected:
     virtual void _OnCloseInternal();
@@ -173,7 +173,7 @@ public:
     void SetFollowRedirect(bool follow) { _followRedir = follow; }
     void SetAlwaysHandle(bool h) { _alwaysHandle = h; }
 
-    bool Download(const std::string& url, const char *extraRequest = NULL, void *user = NULL, const POST *post = NULL);
+    bool Download(const std::string& url, const char *extraRequest = NULL, void *user = NULL, const POST *post = NULL, int portIfNotSpecified = -1);
     bool SendRequest(Request& what, bool enqueue);
     bool SendRequest(const std::string what, const char *extraRequest = NULL, void *user = NULL);
     bool QueueRequest(const std::string what, const char *extraRequest = NULL, void *user = NULL);

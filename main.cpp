@@ -23,8 +23,9 @@ protected:
     virtual void _OnOpen()
     {
         puts("_OnOpen()");
-        minihttp::SSLResult sr = verifySSL();
-        printf("SSL status flags (0 is good): 0x%x\n", sr);
+        char buf[1024] = { 0 };
+        minihttp::SSLResult sr = verifySSL(buf, sizeof(buf));
+        printf("SSL status flags (0 is good): 0x%x. Info: %s\n", sr, buf);
         minihttp::HttpSocket::_OnOpen();
     }
 
@@ -56,10 +57,23 @@ int main(int argc, char *argv[])
     ht->SetKeepAlive(3);
 
     ht->SetBufsizeIn(64 * 1024);
+
+    // HTTP GET
+    ht->Download("http://example.com");
     //ht->Download("http://www.ietf.org/rfc/rfc2616.txt");
-    //ht->Download("http://example.com"); // Queue another one
+    // Downloads requested in succession will be queued and processed one after another
+
+    // HTTP GET with SSL, if SSL support is enabled:
     //ht->Download("https://example.com"); // SSL connection
-    ht->Download("raw.githubusercontent.com/fgenesis/minihttp/master/minihttp.h"); // transparent HTTP -> HTTPS redirection
+    //ht->Download("raw.githubusercontent.com/fgenesis/minihttp/master/minihttp.h"); // transparent HTTP -> HTTPS redirection
+
+    // Example HTTP POST request:
+    /*minihttp::POST post;
+    post.add("a", "b");
+    post.add("x", "y");
+    post.add("long string", "possibly invalid data: /x/&$+*#'?!;");
+    post.add("normal", "data");
+    ht->Download("https://httpbin.org/post", NULL, NULL, &post);*/
 
     minihttp::SocketSet ss;
 

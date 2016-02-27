@@ -42,11 +42,11 @@
 #include <algorithm>
 #include <assert.h>
 
-#ifdef MINIHTTP_USE_POLARSSL
-#  include "polarssl/net.h"
-#  include "polarssl/ssl.h"
-#  include "polarssl/entropy.h"
-#  include "polarssl/ctr_drbg.h"
+#ifdef MINIHTTP_USE_MBEDTLS
+#  include <mbedtls/net.h>
+#  include <mbedtls/ssl.h>
+#  include <mbedtls/entropy.h>
+#  include <mbedtls/ctr_drbg.h>
 #endif
 
 #include "minihttp.h"
@@ -68,68 +68,76 @@
 
 namespace minihttp {
 
-#ifdef MINIHTTP_USE_POLARSSL
+enum URIProtocol
+{
+    URIPROT_UNSPECIFIED,
+    URIPROT_UNKNOWN,
+    URIPROT_HTTP,
+    URIPROT_HTTPS
+};
+
+#ifdef MINIHTTP_USE_MBEDTLS
 // ------------------------ SSL STUFF -------------------------
-bool HasSSL() { return true; }
+bool HasSSL()
+{
+    // compile time assertion that mbedtls_net_context really is just an int
+    switch(0) { case 0:; case (sizeof(mbedtls_net_context) == sizeof(int)):; }
+
+    return true;
+}
+
+void traceprint_ssl(void *ctx, int level, const char *file, int line, const char *str )
+{
+    (void)ctx;
+    printf("ssl(%s:%04d) [%d] %s\n", file, line, level, str);
+}
 
 struct SSLCtx
 {
-    SSLCtx() : _inited(0)
+    SSLCtx()
     {
-        entropy_init(&entropy);
-        x509_crt_init(&cacert);
-        memset(&ssl, 0, sizeof(ssl_context));
+        mbedtls_entropy_init(&entropy);
+        mbedtls_x509_crt_init(&cacert);
+        mbedtls_ssl_init(&ssl);
+        mbedtls_ctr_drbg_init(&ctr_drbg);
+        mbedtls_ssl_config_init(&conf);
     }
     ~SSLCtx()
     {
-        entropy_free(&entropy);
-        x509_crt_free(&cacert);
-        ssl_free(&ssl);
-        if(_inited & 1)
-            ctr_drbg_free(&ctr_drbg);
-        if(_inited & 2)
-            ssl_free(&ssl);
+        mbedtls_entropy_free(&entropy);
+        mbedtls_x509_crt_free(&cacert);
+        mbedtls_ssl_free(&ssl);
+        mbedtls_ctr_drbg_free(&ctr_drbg);
+        mbedtls_ssl_config_free(&conf);
     }
     bool init()
     {
         const char *pers = "minihttp";
         const size_t perslen = strlen(pers);
-        
-        int err = ctr_drbg_init(&ctr_drbg, entropy_func, &entropy, (unsigned char *)pers, perslen);
+        int err = mbedtls_ctr_drbg_seed(&ctr_drbg, mbedtls_entropy_func, &entropy, (const unsigned char *)pers, perslen);
         if(err)
         {
-            traceprint("SSLCtx::init(): ctr_drbg_init() returned %d\n", err);
+            traceprint("SSLCtx::init(): mbedtls_ctr_drbg_seed() returned %d\n", err);
             return false;
         }
-        _inited |= 1;
-        
-        err = ssl_init(&ssl);
-        if(err)
-        {
-            traceprint("SSLCtx::init(): ssl_init() returned %d\n", err);
-            return false;
-        }
-        _inited |= 2;
 
         return true;
     }
     void reset()
     {
-        ssl_session_reset(&ssl);
+        mbedtls_ssl_session_reset(&ssl);
     }
 
-    entropy_context entropy;
-    ctr_drbg_context ctr_drbg;
-    ssl_context ssl;
-    x509_crt cacert;
-
-private:
-    unsigned _inited;
+    mbedtls_entropy_context entropy;
+    mbedtls_ctr_drbg_context ctr_drbg;
+    mbedtls_ssl_context ssl;
+    mbedtls_x509_crt cacert;
+    mbedtls_ssl_config conf;
 };
 
 
 // ------------------------------------------------------------
-#else// MINIHTTP_USE_POLARSSL
+#else// MINIHTTP_USE_MBEDTLS
 bool HasSSL() { return false; }
 #endif
 
@@ -213,23 +221,32 @@ static bool _Resolve(const char *host, unsigned int port, struct sockaddr_in *ad
 // FIXME: this does currently not handle links like:
 // http://example.com/index.html#pos
 
-bool SplitURI(const std::string& uri, std::string& host, std::string& file, int& port, bool& useSSL)
+bool SplitURI(const std::string& uri, std::string& host, std::string& file, int& port, URIProtocol& proto)
 {
     const char *p = uri.c_str();
     const char *sl = strstr(p, "//");
     unsigned int offs = 0;
-    bool ssl = false;
+    port = -1;
+    proto = URIPROT_UNSPECIFIED;
     if(sl)
     {
         if(strncmp(p, "http://", 7) == 0)
+        {
             offs = 7;
+            proto = URIPROT_HTTP;
+            port = 80;
+        }
         else if(strncmp(p, "https://", 8) == 0)
         {
-            ssl = true;
             offs = 8;
+            proto = URIPROT_HTTPS;
+            port = 443;
         }
         else
+        {
+            proto = URIPROT_UNKNOWN;
             return false;
+        }
 
         p = sl + 2;
     }
@@ -246,14 +263,12 @@ bool SplitURI(const std::string& uri, std::string& host, std::string& file, int&
         file = sl;
     }
 
-    port = -1;
     size_t colon = host.find(':');
     if(colon != std::string::npos)
     {
         port = atoi(host.c_str() + colon);
-        host.erase(port);
+        host.erase(colon);
     }
-    useSSL = ssl;
 
     return true;
 }
@@ -286,11 +301,11 @@ static bool _SetNonBlocking(SOCKET s, bool nonblock)
 {
     if(!SOCKETVALID(s))
         return false;
-#ifdef MINIHTTP_USE_POLARSSL
+#ifdef MINIHTTP_USE_MBEDTLS
     if(nonblock)
-        return net_set_nonblock(s) == 0;
+        return mbedtls_net_set_nonblock((mbedtls_net_context*)&s) == 0; // this horrible hackery is okay as long as the compile assert in HasSSL() holds
     else
-        return net_set_block(s) == 0;
+        return mbedtls_net_set_block((mbedtls_net_context*)&s) == 0;
 #elif defined(_WIN32)
     ULONG tmp = !!nonblock;
     if(::ioctlsocket(s, FIONBIO, &tmp) == SOCKET_ERROR)
@@ -309,6 +324,9 @@ TcpSocket::TcpSocket()
 : _s(INVALID_SOCKET), _inbuf(NULL), _inbufSize(0), _recvSize(0),
   _readptr(NULL), _lastport(0), _sslctx(NULL)
 {
+#ifdef MINIHTTP_USE_MBEDTLS
+    mbedtls_net_init((mbedtls_net_context*)&_s);
+#endif
 }
 
 TcpSocket::~TcpSocket()
@@ -316,7 +334,7 @@ TcpSocket::~TcpSocket()
     close();
     if(_inbuf)
         free(_inbuf);
-#ifdef MINIHTTP_USE_POLARSSL
+#ifdef MINIHTTP_USE_MBEDTLS
     shutdownSSL();
 #endif
 }
@@ -335,10 +353,10 @@ void TcpSocket::close(void)
 
     _OnCloseInternal();
 
-#ifdef MINIHTTP_USE_POLARSSL
+#ifdef MINIHTTP_USE_MBEDTLS
     if(_sslctx)
         ((SSLCtx*)_sslctx)->reset();
-    net_close(_s);
+    mbedtls_net_free((mbedtls_net_context*)&_s);
 #else
 #  ifdef _WIN32
     ::closesocket((SOCKET)_s);
@@ -374,9 +392,11 @@ void TcpSocket::SetBufsizeIn(unsigned int s)
 
 static bool _openSocket(SOCKET *ps, const char *host, unsigned port)
 {
-#ifdef MINIHTTP_USE_POLARSSL
+#ifdef MINIHTTP_USE_MBEDTLS
     int s;
-    int err = net_connect(&s, host, port);
+    char portstr[16];
+    sprintf(portstr, "%d", port);
+    int err = mbedtls_net_connect((mbedtls_net_context*)&s, host, portstr, MBEDTLS_NET_PROTO_TCP);
     if(err)
     {
         traceprint("open_ssl: net_connect(%s, %u) returned %d\n", host, port, err);
@@ -409,36 +429,40 @@ static bool _openSocket(SOCKET *ps, const char *host, unsigned port)
     return true;
 }
 
-#ifdef MINIHTTP_USE_POLARSSL
-void traceprint_ssl(void *ctx, int level, const char *str )
-{
-    (void)ctx;
-    printf("ssl: [%d] %s\n", level, str);
-}
+#ifdef MINIHTTP_USE_MBEDTLS
 static bool _openSSL(void *ps, SSLCtx *ctx)
 {
-    ssl_set_endpoint(&ctx->ssl, SSL_IS_CLIENT);
-    ssl_set_authmode(&ctx->ssl, SSL_VERIFY_OPTIONAL);
-    ssl_set_ca_chain(&ctx->ssl, &ctx->cacert, NULL, NULL);
+    int err = mbedtls_ssl_config_defaults(&ctx->conf,
+        MBEDTLS_SSL_IS_CLIENT,
+        MBEDTLS_SSL_TRANSPORT_STREAM,
+        MBEDTLS_SSL_PRESET_DEFAULT);
+    if(err)
+    {
+        traceprint("SSLCtx::init(): mbedtls_ssl_config_defaults() returned %d\n", err);
+        return false;
+    }
+
+    mbedtls_ssl_conf_authmode(&ctx->conf, MBEDTLS_SSL_VERIFY_OPTIONAL);
+    mbedtls_ssl_conf_ca_chain(&ctx->conf, &ctx->cacert, NULL);
 
     /* SSLv3 is deprecated, set minimum to TLS 1.0 */
-    ssl_set_min_version(&ctx->ssl, SSL_MAJOR_VERSION_3, SSL_MINOR_VERSION_1);
+    mbedtls_ssl_conf_min_version(&ctx->conf, MBEDTLS_SSL_MAJOR_VERSION_3, MBEDTLS_SSL_MINOR_VERSION_1);
 
-    // The following is removed from newer polarssl versions
-#ifdef SSL_ARC4_DISABLED
-    /* RC4 is deprecated, disable it */
-    ssl_set_arc4_support(&ctx->ssl, SSL_ARC4_DISABLED );
-#endif
+    mbedtls_ssl_conf_rng(&ctx->conf, mbedtls_ctr_drbg_random, &ctx->ctr_drbg);
+    mbedtls_ssl_conf_dbg(&ctx->conf, traceprint_ssl, NULL);
 
-    ssl_set_rng(&ctx->ssl, ctr_drbg_random, &ctx->ctr_drbg);
-    ssl_set_dbg(&ctx->ssl, traceprint_ssl, NULL);
-    //ssl_set_ciphersuites( &ctx->ssl, ssl_default_ciphersuites); // FIXME
-    ssl_set_bio(&ctx->ssl, net_recv, ps, net_send, ps);
-
-    int err;
-    while( (err = ssl_handshake(&ctx->ssl)) )
+    err = mbedtls_ssl_setup(&ctx->ssl, &ctx->conf);
+    if(err)
     {
-        if(err != POLARSSL_ERR_NET_WANT_READ && err != POLARSSL_ERR_NET_WANT_WRITE)
+        traceprint("SSLCtx::init(): mbedtls_ssl_init() returned %d\n", err);
+        return false;
+    }
+
+    mbedtls_ssl_set_bio(&ctx->ssl, (mbedtls_net_context*)ps, mbedtls_net_send, mbedtls_net_recv, NULL);
+
+    while( (err = mbedtls_ssl_handshake(&ctx->ssl)) )
+    {
+        if(err != MBEDTLS_ERR_SSL_WANT_READ && err != MBEDTLS_ERR_SSL_WANT_WRITE)
         {
             traceprint("open_ssl: ssl_handshake returned -0x%x\n\n", -err);
             return false;
@@ -495,7 +519,7 @@ bool TcpSocket::open(const char *host /* = NULL */, unsigned int port /* = 0 */)
 
     _SetNonBlocking(_s, _nonblocking); // restore setting if it was set in invalid state. static call because _s is intentionally still invalid here.
 
-#ifdef MINIHTTP_USE_POLARSSL
+#ifdef MINIHTTP_USE_MBEDTLS
     if(_sslctx)
         if(!_openSSL(&_s, (SSLCtx*)_sslctx))
         {
@@ -509,7 +533,7 @@ bool TcpSocket::open(const char *host /* = NULL */, unsigned int port /* = 0 */)
     return true;
 }
 
-#ifdef MINIHTTP_USE_POLARSSL
+#ifdef MINIHTTP_USE_MBEDTLS
 void TcpSocket::shutdownSSL()
 {
     delete ((SSLCtx*)_sslctx);
@@ -534,7 +558,7 @@ bool TcpSocket::initSSL(const char *certs)
 
     if(certs)
     {
-        int err = x509_crt_parse(&ctx->cacert, (const unsigned char*)certs, strlen(certs));
+        int err = mbedtls_x509_crt_parse(&ctx->cacert, (const unsigned char*)certs, strlen(certs));
         if(err)
         {
             shutdownSSL();
@@ -546,45 +570,48 @@ bool TcpSocket::initSSL(const char *certs)
     return true;
 }
 
-SSLResult TcpSocket::verifySSL()
+SSLResult TcpSocket::verifySSL(char *buf, unsigned bufsize)
 {
     if(!_sslctx)
         return SSLR_NO_SSL;
 
     SSLCtx *ctx = (SSLCtx*)_sslctx;
     unsigned r = SSLR_OK;
-    int res = ssl_get_verify_result(&ctx->ssl);
+    int res = mbedtls_ssl_get_verify_result(&ctx->ssl);
     if(res)
     {
-        if(res & BADCERT_EXPIRED)
+        if(res & MBEDTLS_X509_BADCERT_EXPIRED)
             r |= SSLR_CERT_EXPIRED;
 
-        if(res & BADCERT_REVOKED)
+        if(res & MBEDTLS_X509_BADCERT_REVOKED)
             r |= SSLR_CERT_REVOKED;
 
-        if(res & BADCERT_CN_MISMATCH)
+        if(res & MBEDTLS_X509_BADCERT_CN_MISMATCH)
             r |= SSLR_CERT_CN_MISMATCH;
 
-        if(res & BADCERT_NOT_TRUSTED)
+        if(res & MBEDTLS_X509_BADCERT_NOT_TRUSTED)
             r |= SSLR_CERT_NOT_TRUSTED;
 
-        if(res & BADCERT_MISSING)
+        if(res & MBEDTLS_X509_BADCERT_MISSING)
             r |= SSLR_CERT_MISSING;
 
-        if(res & BADCERT_SKIP_VERIFY)
+        if(res & MBEDTLS_X509_BADCERT_SKIP_VERIFY)
             r |= SSLR_CERT_SKIP_VERIFY;
 
-        if(res & BADCERT_FUTURE)
+        if(res & MBEDTLS_X509_BADCERT_FUTURE)
             r |= SSLR_CERT_FUTURE;
 
         // More than just this?
-        if(res != BADCERT_SKIP_VERIFY)
+        if(res != MBEDTLS_X509_BADCERT_SKIP_VERIFY)
             r |= SSLR_FAIL;
     }
 
+    if(buf && bufsize)
+        mbedtls_x509_crt_verify_info(buf, bufsize, "", res);
+
     return (SSLResult)r;
 }
-#else // MINIHTTP_USE_POLARSSL
+#else // MINIHTTP_USE_MBEDTLS
 void TcpSocket::shutdownSSL() {}
 bool TcpSocket::initSSL(const char *certs) { return false; }
 SSLResult TcpSocket::verifySSL() { return SSLR_NO_SSL; }
@@ -626,16 +653,16 @@ int TcpSocket::_writeBytes(const unsigned char *buf, size_t len)
 {
     int ret = 0;
 
-#ifdef MINIHTTP_USE_POLARSSL
+#ifdef MINIHTTP_USE_MBEDTLS
     int err;
     if(_sslctx)
-        err = ssl_write(&((SSLCtx*)_sslctx)->ssl, buf, len);
+        err = mbedtls_ssl_write(&((SSLCtx*)_sslctx)->ssl, buf, len);
     else
-        err = net_send(&_s, buf, len);
+        err = mbedtls_net_send(&_s, buf, len);
 
     switch(err)
     {
-        case POLARSSL_ERR_NET_WANT_WRITE:
+        case MBEDTLS_ERR_SSL_WANT_WRITE:
             ret = 0; // FIXME: Nothing written, try later?
         default:
             ret = err;
@@ -669,11 +696,11 @@ void TcpSocket::_OnData()
 
 int TcpSocket::_readBytes(unsigned char *buf, size_t maxlen)
 {
-#ifdef MINIHTTP_USE_POLARSSL
+#ifdef MINIHTTP_USE_MBEDTLS
     if(_sslctx)
-        return ssl_read(&((SSLCtx*)_sslctx)->ssl, buf, maxlen);
+        return mbedtls_ssl_read(&((SSLCtx*)_sslctx)->ssl, buf, maxlen);
     else
-        return net_recv(&_s, buf, maxlen);
+        return mbedtls_net_recv(&_s, buf, maxlen);
 #else
     int bytes = recv(_s, buf, maxlen, 0); // last char is used as string terminator
     return bytes != -1 ? bytes : _GetError(); // *nix just returns -1 and sets errno... in that case, return the actual error
@@ -719,8 +746,8 @@ bool TcpSocket::update(void)
 #endif
             return false;
 
-#ifdef MINIHTTP_USE_POLARSSL
-        case POLARSSL_ERR_NET_WANT_READ:
+#ifdef MINIHTTP_USE_MBEDTLS
+        case MBEDTLS_ERR_SSL_WANT_READ:
             break; // Try again later
 #endif
 
@@ -803,17 +830,19 @@ bool HttpSocket::_OnUpdate()
     return true;
 }
 
-bool HttpSocket::Download(const std::string& url,  const char *extraRequest /*= NULL*/, void *user /* = NULL */, const POST *post /*= NULL*/)
+bool HttpSocket::Download(const std::string& url, const char *extraRequest /*= NULL*/, void *user /* = NULL */, const POST *post /*= NULL*/, int portIfNotSpecified /* = -1 */)
 {
     Request req;
     req.user = user;
     if(post)
         req.post = *post;
-    SplitURI(url, req.host, req.resource, req.port, req.useSSL);
+    URIProtocol proto;
+    SplitURI(url, req.host, req.resource, req.port, proto);
+    req.useSSL = proto == URIPROT_HTTPS;
     if(IsRedirecting() && req.host.empty()) // if we're following a redirection to the same host, the server is likely to omit its hostname
         req.host = _curRequest.host;
     if(req.port < 0)
-        req.port = req.useSSL ? 443 : 80;
+        req.port = portIfNotSpecified < 0 ? 80 : portIfNotSpecified;
     if(extraRequest)
         req.extraGetHeaders = extraRequest;
     return SendRequest(req, false);
@@ -1104,7 +1133,7 @@ bool HttpSocket::_Redirect(std::string loc, bool forceGET)
     // treat non-full URLs as local paths (browsers do it the same way)
     if(loc.size() && !strchr(loc.c_str(), ':') && loc[0] != '/')
         loc = '/' + loc;
-    return Download(loc, _curRequest.extraGetHeaders.c_str(), _curRequest.user, forceGET ? NULL : &_curRequest.post);
+    return Download(loc, _curRequest.extraGetHeaders.c_str(), _curRequest.user, forceGET ? NULL : &_curRequest.post, _curRequest.port);
 }
 
 bool HttpSocket::IsRedirecting() const
