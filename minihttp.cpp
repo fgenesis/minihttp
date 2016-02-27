@@ -1064,7 +1064,8 @@ bool HttpSocket::_HandleStatus()
     const char *conn = Hdr("connection"); // if its not keep-alive, server will close it, so we can too
     _mustClose = !conn || STRNICMP(conn, "keep-alive", 10);
 
-    const bool success = IsSuccess();
+    // As per the spec, we also need to handle 1xx codes, but are free to ignore them
+    const bool success = IsSuccess() || (_status >= 100 && _status <= 199);
 
     if(!(_chunkedTransfer || _contentLen) && success)
         traceprint("_ParseHeader: Not chunked transfer and content-length==0, this will go fail");
