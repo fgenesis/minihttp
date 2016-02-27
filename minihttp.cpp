@@ -68,14 +68,6 @@
 
 namespace minihttp {
 
-enum URIProtocol
-{
-    URIPROT_UNSPECIFIED,
-    URIPROT_UNKNOWN,
-    URIPROT_HTTP,
-    URIPROT_HTTPS
-};
-
 #ifdef MINIHTTP_USE_MBEDTLS
 // ------------------------ SSL STUFF -------------------------
 bool HasSSL()
@@ -221,32 +213,33 @@ static bool _Resolve(const char *host, unsigned int port, struct sockaddr_in *ad
 // FIXME: this does currently not handle links like:
 // http://example.com/index.html#pos
 
-bool SplitURI(const std::string& uri, std::string& host, std::string& file, int& port, URIProtocol& proto)
+
+bool SplitURI(const std::string& uri, std::string& protocol, std::string& host, std::string& file, int& port, bool& useSSL)
 {
     const char *p = uri.c_str();
     const char *sl = strstr(p, "//");
     unsigned int offs = 0;
     port = -1;
-    proto = URIPROT_UNSPECIFIED;
+    bool ssl = false;
     if(sl)
     {
+        size_t colon = uri.find(':');
+        size_t firstslash = uri.find('/');
+        if(colon < firstslash)
+            protocol = uri.substr(0, colon);
         if(strncmp(p, "http://", 7) == 0)
         {
             offs = 7;
-            proto = URIPROT_HTTP;
             port = 80;
         }
         else if(strncmp(p, "https://", 8) == 0)
         {
             offs = 8;
-            proto = URIPROT_HTTPS;
             port = 443;
+            ssl = true;
         }
         else
-        {
-            proto = URIPROT_UNKNOWN;
             return false;
-        }
 
         p = sl + 2;
     }
@@ -269,6 +262,7 @@ bool SplitURI(const std::string& uri, std::string& host, std::string& file, int&
         port = atoi(host.c_str() + colon);
         host.erase(colon);
     }
+    useSSL = ssl;
 
     return true;
 }
@@ -282,7 +276,8 @@ void URLEncode(const std::string& s, std::string& enc)
     {
         const unsigned char c = s[i];
         // from  https://www.ietf.org/rfc/rfc1738.txt, page 3
-        if(isalnum(c) || c == '$' || c == '-' || c == '_' || c == '.' || c == '+' || c == '!' || c == '*' || c == '\'' || c == '(' || c == ')' || c == ',')
+        // with some changes for compatibility
+        if(isalnum(c) || c == '-' || c == '_' || c == '.' || c == ',')
             enc += (char)c;
         else if(c == ' ')
             enc += '+';
@@ -334,9 +329,6 @@ TcpSocket::~TcpSocket()
     close();
     if(_inbuf)
         free(_inbuf);
-#ifdef MINIHTTP_USE_MBEDTLS
-    shutdownSSL();
-#endif
 }
 
 bool TcpSocket::isOpen(void)
@@ -357,6 +349,7 @@ void TcpSocket::close(void)
     if(_sslctx)
         ((SSLCtx*)_sslctx)->reset();
     mbedtls_net_free((mbedtls_net_context*)&_s);
+    shutdownSSL();
 #else
 #  ifdef _WIN32
     ::closesocket((SOCKET)_s);
@@ -366,6 +359,7 @@ void TcpSocket::close(void)
 #endif
 
     _s = INVALID_SOCKET;
+    _recvSize = 0;
 }
 
 void TcpSocket::_OnCloseInternal()
@@ -460,6 +454,7 @@ static bool _openSSL(void *ps, SSLCtx *ctx)
 
     mbedtls_ssl_set_bio(&ctx->ssl, (mbedtls_net_context*)ps, mbedtls_net_send, mbedtls_net_recv, NULL);
 
+    traceprint("SSL handshake now...\n");
     while( (err = mbedtls_ssl_handshake(&ctx->ssl)) )
     {
         if(err != MBEDTLS_ERR_SSL_WANT_READ && err != MBEDTLS_ERR_SSL_WANT_WRITE)
@@ -468,7 +463,7 @@ static bool _openSSL(void *ps, SSLCtx *ctx)
             return false;
         }
     }
-
+    traceprint("SSL handshake done\n");
     return true;
 }
 #endif
@@ -498,8 +493,11 @@ bool TcpSocket::open(const char *host /* = NULL */, unsigned int port /* = 0 */)
             return false;
     }
 
+    traceprint("TcpSocket::open(): host = [%s], port = %d\n", host, port);
 
     assert(!SOCKETVALID(_s));
+    
+    _recvSize = 0;
 
     {
         SOCKET s;
@@ -521,11 +519,14 @@ bool TcpSocket::open(const char *host /* = NULL */, unsigned int port /* = 0 */)
 
 #ifdef MINIHTTP_USE_MBEDTLS
     if(_sslctx)
+    {
+        traceprint("TcpSocket::open(): SSL requested...\n");
         if(!_openSSL(&_s, (SSLCtx*)_sslctx))
         {
             close();
             return false;
         }
+    }
 #endif
 
     _OnOpen();
@@ -602,7 +603,7 @@ SSLResult TcpSocket::verifySSL(char *buf, unsigned bufsize)
             r |= SSLR_CERT_FUTURE;
 
         // More than just this?
-        if(res != MBEDTLS_X509_BADCERT_SKIP_VERIFY)
+        if(res & (MBEDTLS_X509_BADCERT_SKIP_VERIFY | MBEDTLS_X509_BADCERT_NOT_TRUSTED))
             r |= SSLR_FAIL;
     }
 
@@ -613,7 +614,11 @@ SSLResult TcpSocket::verifySSL(char *buf, unsigned bufsize)
 }
 #else // MINIHTTP_USE_MBEDTLS
 void TcpSocket::shutdownSSL() {}
-bool TcpSocket::initSSL(const char *certs) { return false; }
+bool TcpSocket::initSSL(const char *certs)
+{
+    traceprint("initSSL: Compiled without SSL support!");
+    return false;
+}
 SSLResult TcpSocket::verifySSL() { return SSLR_NO_SSL; }
 #endif
 
@@ -638,7 +643,8 @@ bool TcpSocket::SendBytes(const void *str, unsigned int len)
         }
         else if(ret < 0)
         {
-            traceprint("SendBytes: error %d, closing socket\n", ret);
+            int err = ret == -1 ? _GetError() : ret;
+            traceprint("SendBytes: error %d: %s\n", err, _GetErrorStr(err).c_str());
             close();
             return false;
         }
@@ -672,9 +678,7 @@ int TcpSocket::_writeBytes(const unsigned char *buf, size_t len)
     #ifdef MSG_NOSIGNAL
        flags |= MSG_NOSIGNAL;
     #endif
-    ret = ::send(_s, buf, len, flags);
-    if(ret == -1) // *nix just returns -1 and sets errno... in that case, return the actual error
-        ret = _GetError();
+    return ::send(_s, (const char*)buf, len, flags);
 #endif
 
     return ret;
@@ -702,8 +706,7 @@ int TcpSocket::_readBytes(unsigned char *buf, size_t maxlen)
     else
         return mbedtls_net_recv(&_s, buf, maxlen);
 #else
-    int bytes = recv(_s, buf, maxlen, 0); // last char is used as string terminator
-    return bytes != -1 ? bytes : _GetError(); // *nix just returns -1 and sets errno... in that case, return the actual error
+    return recv(_s, (char*)buf, maxlen, 0); // last char is used as string terminator
 #endif
 }
 
@@ -733,12 +736,14 @@ bool TcpSocket::update(void)
     }
     else if(bytes == 0) // remote has closed the connection
     {
-        _recvSize = 0;
         close();
     }
     else // whoops, error?
     {
-        switch(bytes)
+        // Possible that the error is returned directly (in that case, < -1, or -1 is returned and the error has to be retrieved seperately.
+        // But in the latter case, error numbers may be positive (at least on windows...)
+        int err = bytes == -1 ? _GetError() : bytes;
+        switch(err)
         {
         case EWOULDBLOCK:
 #if defined(EAGAIN) && (EWOULDBLOCK != EAGAIN)
@@ -752,7 +757,7 @@ bool TcpSocket::update(void)
 #endif
 
         default:
-            traceprint("SOCKET UPDATE ERROR: (%d): %s\n", bytes, _GetErrorStr(bytes).c_str());
+            traceprint("SOCKET UPDATE ERROR: (%d): %s\n", err, _GetErrorStr(err).c_str());
         case ECONNRESET:
         case ENOTCONN:
         case ETIMEDOUT:
@@ -830,21 +835,45 @@ bool HttpSocket::_OnUpdate()
     return true;
 }
 
-bool HttpSocket::Download(const std::string& url, const char *extraRequest /*= NULL*/, void *user /* = NULL */, const POST *post /*= NULL*/, int portIfNotSpecified /* = -1 */)
+bool HttpSocket::Download(const std::string& url, const char *extraRequest /*= NULL*/, void *user /* = NULL */, const POST *post /*= NULL*/)
 {
     Request req;
     req.user = user;
     if(post)
         req.post = *post;
-    URIProtocol proto;
-    SplitURI(url, req.host, req.resource, req.port, proto);
-    req.useSSL = proto == URIPROT_HTTPS;
+    SplitURI(url, req.protocol, req.host, req.resource, req.port, req.useSSL);
     if(IsRedirecting() && req.host.empty()) // if we're following a redirection to the same host, the server is likely to omit its hostname
         req.host = _curRequest.host;
     if(req.port < 0)
-        req.port = portIfNotSpecified < 0 ? 80 : portIfNotSpecified;
+        req.port = 80;
     if(extraRequest)
         req.extraGetHeaders = extraRequest;
+    return SendRequest(req, false);
+}
+
+
+bool HttpSocket::_Redirect(std::string loc, bool forceGET)
+{
+    traceprint("Following HTTP redirect to: %s\n", loc.c_str());
+    if(loc.empty())
+        return false;
+
+    Request req;
+    req.user = _curRequest.user;
+    req.useSSL = _curRequest.useSSL;
+    if(!forceGET)
+        req.post = _curRequest.post;
+    SplitURI(loc, req.protocol, req.host, req.resource, req.port, req.useSSL);
+    if(req.protocol.empty()) // assume local resource
+    {
+        req.host = _curRequest.host;
+        req.resource = loc;
+    }
+    if(req.host.empty())
+        req.host = _curRequest.host;
+    if(req.port < 0)
+        req.port = _curRequest.port;
+    req.extraGetHeaders = _curRequest.extraGetHeaders;
     return SendRequest(req, false);
 }
 
@@ -955,7 +984,11 @@ bool HttpSocket::_OpenRequest(const Request& req)
     if(req.useSSL && !hasSSL())
     {
         traceprint("HttpSocket::_OpenRequest(): Is an SSL connection, but SSL was not inited, doing that now\n");
-        initSSL(NULL); // FIXME: supply cert list?
+        if(!initSSL(NULL)) // FIXME: supply cert list?
+        {
+            traceprint("FAILED to init SSL");
+            return false;
+        }
     }
     if(!open(req.host.c_str(), req.port))
         return false;
@@ -1067,7 +1100,9 @@ void HttpSocket::_ParseHeaderFields(const char *s, size_t size)
             ++val;
         std::string key(s, colon - s);
         strToLower(key);
-        _hdrs[key] = std::string(val, valEnd - val);
+        std::string valstr(val, valEnd - val);
+        _hdrs[key] = valstr;
+        traceprint("HDR: %s: %s\n", key.c_str(), valstr.c_str());
         s = valEnd;
     }
 }
@@ -1115,25 +1150,12 @@ bool HttpSocket::_HandleStatus()
         case 308:
             if(_followRedir)
                 if(const char *loc = Hdr("location"))
-                {
-                    traceprint("Following HTTP redirect to: %s\n", loc);
                     _Redirect(loc, forceGET);
-                }
             return false;
 
         default:
             return false;
     }
-}
-
-bool HttpSocket::_Redirect(std::string loc, bool forceGET)
-{
-    if(loc.empty())
-        return false;
-    // treat non-full URLs as local paths (browsers do it the same way)
-    if(loc.size() && !strchr(loc.c_str(), ':') && loc[0] != '/')
-        loc = '/' + loc;
-    return Download(loc, _curRequest.extraGetHeaders.c_str(), _curRequest.user, forceGET ? NULL : &_curRequest.post, _curRequest.port);
 }
 
 bool HttpSocket::IsRedirecting() const

@@ -23,8 +23,6 @@ bool InitNetwork();
 void StopNetwork();
 bool HasSSL();
 
-bool SplitURI(const std::string& uri, std::string& host, std::string& file, int& port);
-
 // append to enc
 void URLEncode(const std::string& s, std::string& enc);
 
@@ -145,6 +143,7 @@ struct Request
     Request(const std::string& h, const std::string& res, int p = 80, void *u = NULL)
         : host(h), resource(res), port(80), user(u), useSSL(false) {}
 
+    std::string protocol;
     std::string host;
     std::string header; // set by socket
     std::string resource;
@@ -173,7 +172,7 @@ public:
     void SetFollowRedirect(bool follow) { _followRedir = follow; }
     void SetAlwaysHandle(bool h) { _alwaysHandle = h; }
 
-    bool Download(const std::string& url, const char *extraRequest = NULL, void *user = NULL, const POST *post = NULL, int portIfNotSpecified = -1);
+    bool Download(const std::string& url, const char *extraRequest = NULL, void *user = NULL, const POST *post = NULL);
     bool SendRequest(Request& what, bool enqueue);
     bool SendRequest(const std::string what, const char *extraRequest = NULL, void *user = NULL);
     bool QueueRequest(const std::string what, const char *extraRequest = NULL, void *user = NULL);

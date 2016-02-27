@@ -46,12 +46,20 @@ protected:
 
 int main(int argc, char *argv[])
 {
+    if(argc != 2)
+    {
+        puts("URL plz!");
+        return 1;
+    }
+
 #ifdef SIGPIPE
     // On *NIX systems, don't signal writing to a closed socket.
     signal(SIGPIPE, SIG_IGN);
 #endif
 
     minihttp::InitNetwork();
+    atexit(minihttp::StopNetwork);
+
     HttpDumpSocket *ht = new HttpDumpSocket;
 
     ht->SetKeepAlive(3);
@@ -59,7 +67,7 @@ int main(int argc, char *argv[])
     ht->SetBufsizeIn(64 * 1024);
 
     // HTTP GET
-    ht->Download("http://example.com");
+    //ht->Download("http://example.com");
     //ht->Download("http://www.ietf.org/rfc/rfc2616.txt");
     // Downloads requested in succession will be queued and processed one after another
 
@@ -68,12 +76,16 @@ int main(int argc, char *argv[])
     //ht->Download("raw.githubusercontent.com/fgenesis/minihttp/master/minihttp.h"); // transparent HTTP -> HTTPS redirection
 
     // Example HTTP POST request:
-    /*minihttp::POST post;
+    /*
+    minihttp::POST post;
     post.add("a", "b");
     post.add("x", "y");
     post.add("long string", "possibly invalid data: /x/&$+*#'?!;");
     post.add("normal", "data");
-    ht->Download("https://httpbin.org/post", NULL, NULL, &post);*/
+    ht->Download("https://httpbin.org/post", NULL, NULL, &post);
+    */
+
+    ht->Download(argv[1]);
 
     minihttp::SocketSet ss;
 
