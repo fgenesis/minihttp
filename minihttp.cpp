@@ -621,10 +621,10 @@ SSLResult TcpSocket::verifySSL(char *buf, unsigned bufsize)
 void TcpSocket::shutdownSSL() {}
 bool TcpSocket::initSSL(const char *certs)
 {
-    traceprint("initSSL: Compiled without SSL support!");
+    traceprint("initSSL: Compiled without SSL support!\n");
     return false;
 }
-SSLResult TcpSocket::verifySSL() { return SSLR_NO_SSL; }
+SSLResult TcpSocket::verifySSL(char *buf, unsigned buflen) { return SSLR_NO_SSL; }
 #endif
 
 bool TcpSocket::SendBytes(const void *str, unsigned int len)
@@ -991,7 +991,7 @@ bool HttpSocket::_OpenRequest(const Request& req)
         traceprint("HttpSocket::_OpenRequest(): Is an SSL connection, but SSL was not inited, doing that now\n");
         if(!initSSL(NULL)) // FIXME: supply cert list?
         {
-            traceprint("FAILED to init SSL");
+            traceprint("FAILED to init SSL\n");
             return false;
         }
     }
