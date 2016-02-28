@@ -113,6 +113,32 @@ struct SSLCtx
             return false;
         }
 
+        err = mbedtls_ssl_config_defaults(&conf,
+            MBEDTLS_SSL_IS_CLIENT,
+            MBEDTLS_SSL_TRANSPORT_STREAM,
+            MBEDTLS_SSL_PRESET_DEFAULT);
+        if(err)
+        {
+            traceprint("SSLCtx::init(): mbedtls_ssl_config_defaults() returned %d\n", err);
+            return false;
+        }
+
+        mbedtls_ssl_conf_authmode(&conf, MBEDTLS_SSL_VERIFY_OPTIONAL);
+        mbedtls_ssl_conf_ca_chain(&conf, &cacert, NULL);
+
+        /* SSLv3 is deprecated, set minimum to TLS 1.0 */
+        mbedtls_ssl_conf_min_version(&conf, MBEDTLS_SSL_MAJOR_VERSION_3, MBEDTLS_SSL_MINOR_VERSION_1);
+
+        mbedtls_ssl_conf_rng(&conf, mbedtls_ctr_drbg_random, &ctr_drbg);
+        mbedtls_ssl_conf_dbg(&conf, traceprint_ssl, NULL);
+
+        err = mbedtls_ssl_setup(&ssl, &conf);
+        if(err)
+        {
+            traceprint("SSLCtx::init(): mbedtls_ssl_init() returned %d\n", err);
+            return false;
+        }
+
         return true;
     }
     void reset()
@@ -161,6 +187,8 @@ inline std::string _GetErrorStr(int e)
     return ret;
 }
 
+static bool _networkInitDone = false;
+
 bool InitNetwork()
 {
 #ifdef _WIN32
@@ -171,6 +199,7 @@ bool InitNetwork()
         return false;
     }
 #endif
+    _networkInitDone = true;
     return true;
 }
 
@@ -179,6 +208,7 @@ void StopNetwork()
 #ifdef _WIN32
     WSACleanup();
 #endif
+    _networkInitDone = false;
 }
 
 static bool _Resolve(const char *host, unsigned int port, struct sockaddr_in *addr)
@@ -426,35 +456,10 @@ static bool _openSocket(SOCKET *ps, const char *host, unsigned port)
 #ifdef MINIHTTP_USE_MBEDTLS
 static bool _openSSL(void *ps, SSLCtx *ctx)
 {
-    int err = mbedtls_ssl_config_defaults(&ctx->conf,
-        MBEDTLS_SSL_IS_CLIENT,
-        MBEDTLS_SSL_TRANSPORT_STREAM,
-        MBEDTLS_SSL_PRESET_DEFAULT);
-    if(err)
-    {
-        traceprint("SSLCtx::init(): mbedtls_ssl_config_defaults() returned %d\n", err);
-        return false;
-    }
-
-    mbedtls_ssl_conf_authmode(&ctx->conf, MBEDTLS_SSL_VERIFY_OPTIONAL);
-    mbedtls_ssl_conf_ca_chain(&ctx->conf, &ctx->cacert, NULL);
-
-    /* SSLv3 is deprecated, set minimum to TLS 1.0 */
-    mbedtls_ssl_conf_min_version(&ctx->conf, MBEDTLS_SSL_MAJOR_VERSION_3, MBEDTLS_SSL_MINOR_VERSION_1);
-
-    mbedtls_ssl_conf_rng(&ctx->conf, mbedtls_ctr_drbg_random, &ctx->ctr_drbg);
-    mbedtls_ssl_conf_dbg(&ctx->conf, traceprint_ssl, NULL);
-
-    err = mbedtls_ssl_setup(&ctx->ssl, &ctx->conf);
-    if(err)
-    {
-        traceprint("SSLCtx::init(): mbedtls_ssl_init() returned %d\n", err);
-        return false;
-    }
-
     mbedtls_ssl_set_bio(&ctx->ssl, (mbedtls_net_context*)ps, mbedtls_net_send, mbedtls_net_recv, NULL);
 
     traceprint("SSL handshake now...\n");
+    int err;
     while( (err = mbedtls_ssl_handshake(&ctx->ssl)) )
     {
         if(err != MBEDTLS_ERR_SSL_WANT_READ && err != MBEDTLS_ERR_SSL_WANT_WRITE)
@@ -1324,6 +1329,81 @@ void SocketSet::add(TcpSocket *s, bool deleteWhenDone /* = true */)
 }
 
 #endif
+
+
+// ---------------------------------------------------
+// Simple one-shot API
+
+class DLSocket : public HttpSocket
+{
+public:
+    DLSocket() : buf(NULL), bufsz(0), bufcap(0), finished(false), fail(false)
+    {
+    }
+
+    virtual ~DLSocket() {}
+
+    char *buf;
+    size_t bufsz;
+    size_t bufcap;
+    bool finished;
+    bool fail;
+
+protected:
+
+    void _OnRequestDone()
+    {
+        finished = true;
+        buf[bufsz] = 0; // zero-terminate
+    }
+
+    void _OnRecv(void *incoming, unsigned size)
+    {
+        if(!size || !IsSuccess())
+            return;
+        if(bufcap + size + 1 >= bufsz) // always make sure there's 1 more byte free for the zero-terminator
+        {
+            bufcap += (bufcap / 2) + size + 1;
+            buf = (char*)realloc(buf, bufcap);
+            if(!buf)
+            {
+                fail = true;
+                close();
+            }
+        }
+        memcpy(buf + bufsz, incoming, size);
+        bufsz += size;
+    }
+};
+
+char *Download(const char *url, size_t *sz, const POST *post /* = NULL */)
+{
+    if(!_networkInitDone)
+        if(!InitNetwork())
+            return NULL;
+
+    DLSocket dl;
+    dl.SetBufsizeIn(64 * 1024);
+    dl.SetNonBlocking(false);
+    dl.SetFollowRedirect(true);
+    dl.SetAlwaysHandle(false);
+    dl.Download(url, NULL, NULL, post);
+
+    while(dl.isOpen() || dl.HasPendingTask())
+        dl.update();
+
+    if(!dl.finished || dl.fail)
+    {
+        free(dl.buf);
+        return NULL;
+    }
+
+    if(sz)
+        *sz = dl.bufsz;
+
+    return dl.buf;
+}
+
 
 
 } // namespace minihttp

@@ -12,16 +12,29 @@
 #define MINIHTTP_SUPPORT_SOCKET_SET
 // -------------------------
 
-// Intentionally avoid pulling in any other headers
-
+#include <stdlib.h>
 #include <string>
+// Intentionally avoid pulling in any other headers
 
 namespace minihttp
 {
 
+class POST;
+
 bool InitNetwork();
 void StopNetwork();
 bool HasSSL();
+
+// Simple one-shot API to download stuff via HTTP(S).
+// Blocks while waiting until all data have arrived.
+// Optionally, pass a size_t pointer to get the received memory block size (excluding the added zero-terminator).
+// Optionally, pass a pointer to POST data to send a POST request instead of a GET request.
+// Returns a pointer to a zero-terminated memory block on success, NULL on failure.
+// The returned pointer must be free()'d after use.
+// Note: Avoid using this function if possible. It has no safeguards against a malicious web server!
+//       E.g. A server that sends one byte every few seconds but keeping the connection intact
+//       is perfectly capable of stalling the caller for a VERY LONG TIME.
+char *Download(const char *url, size_t *sz = NULL, const POST *post = NULL);
 
 // append to enc
 void URLEncode(const std::string& s, std::string& enc);

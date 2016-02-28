@@ -1,5 +1,4 @@
-// minihttp main.cpp - Sample code how to download a file.
-// Released under the WTFPL (See minihttp.h)
+// Example 2: Sockets + overload API for better control
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -32,6 +31,7 @@ protected:
     virtual void _OnRequestDone()
     {
         printf("_OnRequestDone(): %s\n", GetCurrentRequest().resource.c_str());
+        // Do *NOT* call close() in here!
     }
 
     virtual void _OnRecv(void *buf, unsigned int size)
@@ -46,71 +46,40 @@ protected:
 
 int main(int argc, char *argv[])
 {
-    /*if(argc != 2)
-    {
-        puts("URL plz!");
-        return 1;
-    }*/
-
 #ifdef SIGPIPE
     // On *NIX systems, don't signal writing to a closed socket.
     signal(SIGPIPE, SIG_IGN);
 #endif
 
-    // ----------------------------------------------------
-    // Dead-simple one-shot file download API
-
-
-    char *content = minihttp::Download("https://
-        fg.wzff.de");
-    if(content)
-    {
-        puts(content);
-        free(content);
-    }
-    else
-        puts("ERROR!");
-
-
-    return 0;
-
-
-
-
-    //------------------------------------------------------
-    // Sockets + overload API for better control
-
+    // minihttp::Download() in example 1 does this automatically,
+    // but if this function is not used this has to be called first to init networking properly.
     minihttp::InitNetwork();
     atexit(minihttp::StopNetwork);
 
     HttpDumpSocket *ht = new HttpDumpSocket;
-
     ht->SetKeepAlive(3);
-
     ht->SetBufsizeIn(64 * 1024);
 
     // HTTP GET
-    //ht->Download("http://example.com");
-    //ht->Download("http://www.ietf.org/rfc/rfc2616.txt");
+    ht->Download("example.com");
+    ht->Download("http://www.ietf.org/rfc/rfc2616.txt");
     // Downloads requested in succession will be queued and processed one after another
 
     // HTTP GET with SSL, if SSL support is enabled:
-    //ht->Download("https://example.com"); // SSL connection
-    //ht->Download("raw.githubusercontent.com/fgenesis/minihttp/master/minihttp.h"); // transparent HTTP -> HTTPS redirection
+    ht->Download("https://example.com"); // SSL connection
+    ht->Download("raw.githubusercontent.com/fgenesis/minihttp/master/minihttp.h"); // transparent HTTP -> HTTPS redirection
 
     // Example HTTP POST request:
-    /*
     minihttp::POST post;
     post.add("a", "b");
     post.add("x", "y");
     post.add("long string", "possibly invalid data: /x/&$+*#'?!;");
     post.add("normal", "data");
     ht->Download("https://httpbin.org/post", NULL, NULL, &post);
-    */
 
     minihttp::SocketSet ss;
 
-    ss.add(ht, true); // Delete socket if closed and no task left.
+    ss.add(ht, true); // true: Delete socket if closed and no task left.
 
     // This is non-blocking and could be done in background or by another thread.
     // Hogs quite some CPU doing it this way, though.

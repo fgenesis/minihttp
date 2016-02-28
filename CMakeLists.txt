@@ -20,6 +20,14 @@ if(MINIHTTP_USE_MBEDTLS)
     set(EXTRA_LIBS ${EXTRA_LIBS} ${MBEDTLS_LIBRARIES})
 endif()
 
+add_library(minihttp
+    minihttp.cpp
+    minihttp.h
+)
+target_link_libraries(minihttp ${EXTRA_LIBS})
 
-add_executable(htt minihttp.cpp minihttp.h main.cpp)
-target_link_libraries(htt ${EXTRA_LIBS})
+add_executable(example1 example1.cpp)
+add_executable(example2 example2.cpp)
+target_link_libraries(example1 minihttp)
+target_link_libraries(example2 minihttp)
+
