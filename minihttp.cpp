@@ -1137,7 +1137,7 @@ bool HttpSocket::_HandleStatus()
     const bool success = IsSuccess() || (_status >= 100 && _status <= 199);
 
     if(!(_chunkedTransfer || _contentLen) && success)
-        traceprint("_ParseHeader: Not chunked transfer and content-length==0, this will go fail");
+        traceprint("_ParseHeader: Not chunked transfer and content-length==0, this will go fail\n");
 
     traceprint("Got HTTP Status %d\n", _status);
 
@@ -1354,7 +1354,8 @@ protected:
     void _OnRequestDone()
     {
         finished = true;
-        buf[bufsz] = 0; // zero-terminate
+        if(buf)
+            buf[bufsz] = 0; // zero-terminate
     }
 
     void _OnRecv(void *incoming, unsigned size)
@@ -1401,6 +1402,8 @@ char *Download(const char *url, size_t *sz, const POST *post /* = NULL */)
     if(sz)
         *sz = dl.bufsz;
 
+    // FIXME: if the body is empty (aka the HTTP reply contained entirely of headers only), buf was not allocated and is still NULL.
+    // Might want to return 1 malloc'd zero byte in that case?
     return dl.buf;
 }
 
