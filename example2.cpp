@@ -59,6 +59,7 @@ int main(int argc, char *argv[])
     HttpDumpSocket *ht = new HttpDumpSocket;
     ht->SetKeepAlive(3);
     ht->SetBufsizeIn(64 * 1024);
+    ht->SetUserAgent("minihttp"); // Let the server know who we are. This is optional but it seems that some servers check that this is set.
 
     // HTTP GET
     ht->Download("example.com");

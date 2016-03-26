@@ -1388,6 +1388,7 @@ char *Download(const char *url, size_t *sz, const POST *post /* = NULL */)
     dl.SetNonBlocking(false);
     dl.SetFollowRedirect(true);
     dl.SetAlwaysHandle(false);
+    dl.SetUserAgent("minihttp");
     dl.Download(url, NULL, NULL, post);
 
     while(dl.isOpen() || dl.HasPendingTask())
