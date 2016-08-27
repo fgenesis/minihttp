@@ -72,10 +72,10 @@ int main(int argc, char *argv[])
 
     // Example HTTP POST request:
     minihttp::POST post;
-    post.addFormData("a", "b");
-    post.addFormData("x", "y");
-    post.addFormData("long string", "possibly invalid data: /x/&$+*#'?!;");
-    post.addFormData("normal", "data");
+    post.add("a", "b");
+    post.add("x", "y");
+    post.add("long string", "possibly invalid data: /x/&$+*#'?!;");
+    post.add("normal", "data");
     ht->Download("https://httpbin.org/post", NULL, NULL, &post);
 
     minihttp::SocketSet ss;

@@ -141,7 +141,7 @@ class POST
 {
 public:
     void reserve(size_t res) { data.reserve(res); }
-	POST& addFormData(const char *key, const char *value);
+	POST& add(const char *key, const char *value);
 	POST& setJsonData(const char *value);
     const char *c_str() const { return data.c_str(); }
     const std::string& str() const { return data; }

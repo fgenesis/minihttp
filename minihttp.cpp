@@ -788,7 +788,7 @@ static void strToLower(std::string& s)
     std::transform(s.begin(), s.end(), s.begin(), tolower);
 }
 
-POST& POST::addFormData(const char *key, const char *value)
+POST& POST::add(const char *key, const char *value)
 {
 	if(json)
 		data.clear();
