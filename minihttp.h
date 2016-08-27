@@ -141,13 +141,16 @@ class POST
 {
 public:
     void reserve(size_t res) { data.reserve(res); }
-    POST& add(const char *key, const char *value);
+	POST& addFormData(const char *key, const char *value);
+	POST& setJsonData(const char *value);
     const char *c_str() const { return data.c_str(); }
     const std::string& str() const { return data; }
     bool empty() const { return data.empty(); }
     size_t length() const { return data.length(); }
+	bool isJson() const { return json; }
 private:
     std::string data;
+	bool json = false;
 };
 
 struct Request
