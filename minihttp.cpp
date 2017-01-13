@@ -346,8 +346,13 @@ static bool _SetNonBlocking(SOCKET s, bool nonblock)
 }
 
 TcpSocket::TcpSocket()
-: _s(INVALID_SOCKET), _inbuf(NULL), _inbufSize(0), _recvSize(0),
-  _readptr(NULL), _lastport(0), _sslctx(NULL)
+	: _inbuf(NULL)
+	, _readptr(NULL)
+	, _inbufSize(0)
+	, _recvSize(0)
+	, _lastport(0)
+	, _s(INVALID_SOCKET)
+	, _sslctx(NULL)
 {
 #ifdef MINIHTTP_USE_MBEDTLS
     mbedtls_net_init((mbedtls_net_context*)&_s);
@@ -800,9 +805,15 @@ POST& POST::add(const char *key, const char *value)
 
 
 HttpSocket::HttpSocket()
-: TcpSocket(),
-_keep_alive(0), _remaining(0), _chunkedTransfer(false), _mustClose(true), _inProgress(false),
-_followRedir(true), _alwaysHandle(false), _status(0)
+	: TcpSocket()
+	, _keep_alive(0)
+	, _remaining(0)
+	, _status(0)
+	, _inProgress(false)
+	, _chunkedTransfer(false)
+	, _mustClose(true)
+	, _followRedir(true)
+	, _alwaysHandle(false)
 {
 }
 
