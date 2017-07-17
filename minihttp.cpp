@@ -289,7 +289,7 @@ bool SplitURI(const std::string& uri, std::string& protocol, std::string& host, 
     size_t colon = host.find(':');
     if(colon != std::string::npos)
     {
-        port = atoi(host.c_str() + colon);
+        port = atoi(host.c_str() + colon + 1);
         host.erase(colon);
     }
     useSSL = ssl;
