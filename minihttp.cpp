@@ -1373,7 +1373,7 @@ protected:
     {
         if(!size || !IsSuccess())
             return;
-        if(bufcap + size + 1 >= bufsz) // always make sure there's 1 more byte free for the zero-terminator
+        if(bufsz + size + 1 >= bufcap) // always make sure there's 1 more byte free for the zero-terminator
         {
             bufcap += (bufcap / 2) + size + 1;
             buf = (char*)realloc(buf, bufcap);
