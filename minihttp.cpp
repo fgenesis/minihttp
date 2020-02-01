@@ -177,7 +177,7 @@ inline std::string _GetErrorStr(int e)
     LPTSTR s;
     ::FormatMessage(FORMAT_MESSAGE_ALLOCATE_BUFFER | FORMAT_MESSAGE_FROM_SYSTEM, NULL, e, 0, (LPTSTR)&s, 0, NULL);
     if(s)
-        ret = s;
+        ret = (const char*)s;
     ::LocalFree(s);
 #else
      const char *s = strerror(e);
@@ -868,7 +868,7 @@ bool HttpSocket::Download(const std::string& url, const char *extraRequest /*= N
 }
 
 
-bool HttpSocket::_Redirect(std::string loc, bool forceGET)
+bool HttpSocket::_Redirect(const std::string& loc, bool forceGET)
 {
     traceprint("Following HTTP redirect to: %s\n", loc.c_str());
     if(loc.empty())
@@ -893,7 +893,7 @@ bool HttpSocket::_Redirect(std::string loc, bool forceGET)
     return SendRequest(req, false);
 }
 
-bool HttpSocket::SendRequest(const std::string what, const char *extraRequest /*= NULL*/, void *user /* = NULL */)
+bool HttpSocket::SendRequest(const std::string& what, const char *extraRequest /*= NULL*/, void *user /* = NULL */)
 {
     Request req(what, _host, _lastport, user);
     if(extraRequest)
@@ -901,7 +901,7 @@ bool HttpSocket::SendRequest(const std::string what, const char *extraRequest /*
     return SendRequest(req, false);
 }
 
-bool HttpSocket::QueueRequest(const std::string what, const char *extraRequest /*= NULL*/, void *user /* = NULL */)
+bool HttpSocket::QueueRequest(const std::string& what, const char *extraRequest /*= NULL*/, void *user /* = NULL */)
 {
     Request req(what, _host, _lastport, user);
     if(extraRequest)
