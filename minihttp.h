@@ -187,8 +187,8 @@ public:
 
     bool Download(const std::string& url, const char *extraRequest = NULL, void *user = NULL, const POST *post = NULL);
     bool SendRequest(Request& what, bool enqueue);
-    bool SendRequest(const std::string what, const char *extraRequest = NULL, void *user = NULL);
-    bool QueueRequest(const std::string what, const char *extraRequest = NULL, void *user = NULL);
+    bool SendRequest(const std::string& what, const char *extraRequest = NULL, void *user = NULL);
+    bool QueueRequest(const std::string& what, const char *extraRequest = NULL, void *user = NULL);
 
     unsigned int GetRemaining() const { return _remaining; }
 
@@ -214,7 +214,7 @@ protected:
     // new ones:
     virtual void _OnRequestDone() {}
 
-    bool _Redirect(std::string loc, bool forceGET);
+    bool _Redirect(const std::string& loc, bool forceGET);
 
     void _ProcessChunk();
     bool _EnqueueOrSend(const Request& req, bool forceQueue = false);
