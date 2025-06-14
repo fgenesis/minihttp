@@ -388,6 +388,9 @@ void TcpSocket::close(void)
 
     _OnCloseInternal();
 
+    if(!SOCKETVALID(_s))
+        return;
+
 #ifdef MINIHTTP_USE_MBEDTLS
     if(_sslctx)
         ((SSLCtx*)_sslctx)->reset();
