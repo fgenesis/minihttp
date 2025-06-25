@@ -1010,6 +1010,7 @@ bool HttpSocket::_OpenRequest(const Request& req)
         traceprint("HttpSocket::_OpenRequest(): _inProgress == true, should not be called.");
         return false;
     }
+    _status = 0;
     if(req.useSSL && !hasSSL())
     {
         traceprint("HttpSocket::_OpenRequest(): Is an SSL connection, but SSL was not inited, doing that now\n");
@@ -1023,7 +1024,6 @@ bool HttpSocket::_OpenRequest(const Request& req)
         return false;
     _inProgress = true;
     _curRequest = req;
-    _status = 0;
     return true;
 }
 
