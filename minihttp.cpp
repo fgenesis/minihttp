@@ -458,6 +458,11 @@ static bool _openSocket(SOCKET *ps, const char *host, unsigned port)
     if (::connect(s, (sockaddr*)&addr, sizeof(sockaddr)))
     {
         traceprint("CONNECT ERROR: %s\n", _GetErrorStr(_GetError()).c_str());
+#  ifdef _WIN32
+        ::closesocket(s);
+#  else
+        ::close(s);
+#  endif
         return false;
     }
 #endif
